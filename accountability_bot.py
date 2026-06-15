@@ -130,47 +130,71 @@ def save_data(data: dict) -> None:
         json.dump(data, f, indent=2)
 
 
+MAX_RETRIES = 2  # resend this many times before dropping the whole session
+
+
 def run_checkin() -> None:
     print(f"[{now_str()}] Starting check-in session")
 
-    session = {
-        "timestamp": datetime.datetime.now().isoformat(),
-        "questions": [],
-    }
-
-    # Drain stale updates so we only capture fresh replies
     offset = drain_updates()
-
     send_message("Hey! Quick accountability check-in — I have 3 questions for you.")
     time.sleep(0.8)
 
-    for idx, question in enumerate(QUESTIONS, 1):
-        resp = send_message(f"{idx}. {question}")
-        sent_at = time.time()
-        sent_id = resp.get("result", {}).get("message_id", 0)
-        print(f"  Q{idx} sent (msg_id={sent_id})")
+    collected: list[tuple[str, str, float]] = []  # (question, answer, elapsed)
 
-        deadline = sent_at + 600  # 10 minutes to answer each question
-        answer, elapsed, offset = poll_for_reply(offset, deadline)
+    for idx, question in enumerate(QUESTIONS, 1):
+        answer = None
+        elapsed = None
+
+        for attempt in range(MAX_RETRIES + 1):
+            label = f"  Q{idx} attempt {attempt + 1}/{MAX_RETRIES + 1}"
+            if attempt == 0:
+                send_message(f"{idx}. {question}")
+            else:
+                send_message(f"Still waiting on Q{idx}: {question}")
+
+            print(f"{label} sent")
+            answer, elapsed, offset = poll_for_reply(offset, time.time() + 600)
+
+            if answer is not None:
+                print(f"{label}: answered in {elapsed:.1f}s → {answer!r}")
+                break
+
+            print(f"{label}: timeout")
 
         if answer is None:
-            print(f"  Q{idx}: no response (timeout)")
-        else:
-            print(f"  Q{idx}: answered in {elapsed:.1f}s → {answer!r}")
+            # Exhausted retries — drop entire session, no partial data
+            print(f"[{now_str()}] Dropping session after Q{idx} got no response")
+            send_message("No response after 2 attempts. Dropping this check-in — I'll try again later.")
+            session = {
+                "timestamp": datetime.datetime.now().isoformat(),
+                "status": "dropped",
+                "dropped_on_question": idx,
+                "questions": [
+                    {"question": q, "answer": None, "response_time_seconds": None}
+                    for q in QUESTIONS
+                ],
+            }
+            data = load_data()
+            data["sessions"].append(session)
+            save_data(data)
+            return
 
-        session["questions"].append({
-            "question": question,
-            "answer": answer,
-            "response_time_seconds": round(elapsed, 1) if elapsed is not None else None,
-        })
-
-        # Small pause between questions when answered quickly
-        if answer and idx < len(QUESTIONS):
+        collected.append((question, answer, elapsed))
+        if idx < len(QUESTIONS):
             time.sleep(0.8)
 
     send_message("Thanks for checking in! Stay focused. 💪")
     print(f"[{now_str()}] Session complete")
 
+    session = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "status": "completed",
+        "questions": [
+            {"question": q, "answer": a, "response_time_seconds": round(e, 1)}
+            for q, a, e in collected
+        ],
+    }
     data = load_data()
     data["sessions"].append(session)
     save_data(data)
@@ -238,4 +262,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        print("TEST MODE — running one check-in immediately")
+        run_checkin()
+    else:
+        main()
