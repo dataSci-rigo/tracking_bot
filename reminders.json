@@ -1,0 +1,18 @@
+[
+  {
+    "id": "wake_up",
+    "message": "Are you up?",
+    "time": "07:00",
+    "days": "daily",
+    "repeat_minutes": 15,
+    "record_as": "wake_time"
+  },
+  {
+    "id": "teeth",
+    "message": "Have you brushed your teeth?",
+    "time": "23:00",
+    "days": "daily",
+    "repeat_minutes": 15,
+    "record_as": "sleep_time"
+  }
+]
