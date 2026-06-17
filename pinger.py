@@ -6,17 +6,20 @@ Backends:
   signal   (default) — uses signal-cli daemon Unix socket
   telegram           — uses Telegram Bot API long-polling
 
-Run:            python pinger.py                  # Signal
+Run:            python pinger.py                   # Signal
                 python pinger.py --backend telegram
 Test one ping:  python pinger.py --now
 Stop:           Ctrl-C
+
+Replying to any bot message counts as confirmation. For random pings you can
+also include the [CODE] anywhere in your reply text as a fallback.
 
 reminders.json fields:
   id             — unique string identifier
   message        — text to send
   time           — "HH:MM" when to fire
   days           — "daily" | "weekdays" | "weekends" | ["mon","tue",...]
-  repeat_minutes — resend every N min until owner replies yes  (default 15)
+  repeat_minutes — resend every N min until owner confirms  (default 15)
   record_as      — optional key saved in days[date] on confirmation
 
 pings.json output shape:
@@ -33,7 +36,7 @@ pings.json output shape:
 
 .env keys (Signal):
   SIGNAL_NUMBER   — e.g. +13233173769
-  SIGNAL_GROUP    — base64 group ID from signal-cli listGroups
+  SIGNAL_GROUP    — base64 group ID from: signal-cli listGroups
   SIGNAL_SOCKET   — path to daemon socket (default /run/signal-cli/socket)
 
 .env keys (Telegram):
@@ -83,19 +86,24 @@ YES_WORDS = {"yes", "y", "yeah", "yep", "yup"}
 
 
 # ── Backend abstraction ───────────────────────────────────────────────────────
+#
+# receive() returns a list of dicts:
+#   {"text": str, "reply_to": int | None}
+#
+# reply_to is the identifier of the message being replied to:
+#   Signal   → quote timestamp (ms)
+#   Telegram → message_id
+#
+# send() returns the sent message's own identifier (same type).
 
 class Backend:
-    """Transport adapter. receive() returns plain text strings from the owner."""
-
-    def send(self, text: str) -> None:
+    def send(self, text: str) -> int:
         raise NotImplementedError
 
     def drain(self) -> None:
-        """Discard any queued/pending messages before starting a new poll."""
         raise NotImplementedError
 
-    def receive(self, timeout: float) -> list[str]:
-        """Return owner/group messages that arrive within timeout seconds."""
+    def receive(self, timeout: float) -> list[dict]:
         raise NotImplementedError
 
 
@@ -105,11 +113,12 @@ class _SignalSocket:
     """Persistent JSON-RPC connection to the signal-cli daemon."""
 
     def __init__(self):
-        self._sock   = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        self._sock     = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
         self._sock.connect(SIGNAL_SOCKET)
-        self._inbox  = queue.Queue()
-        self._req_id = 0
-        self._lock   = threading.Lock()
+        self._inbox    = queue.Queue()
+        self._pending: dict[int, queue.Queue] = {}
+        self._req_id   = 0
+        self._lock     = threading.Lock()
         threading.Thread(target=self._reader, daemon=True).start()
 
     def _reader(self) -> None:
@@ -131,19 +140,35 @@ class _SignalSocket:
                     obj = json.loads(line)
                     if obj.get("method") == "receive":
                         self._inbox.put(obj)
+                    elif "id" in obj:
+                        resp_q = self._pending.get(obj["id"])
+                        if resp_q:
+                            resp_q.put(obj)
                 except json.JSONDecodeError:
                     pass
 
-    def send(self, text: str) -> None:
+    def send(self, text: str) -> int:
+        """Send to group. Returns Signal timestamp (ms) of the sent message."""
         with self._lock:
             self._req_id += 1
+            req_id = self._req_id
+            resp_q: queue.Queue = queue.Queue()
+            self._pending[req_id] = resp_q
             req = {
                 "jsonrpc": "2.0",
                 "method":  "send",
                 "params":  {"groupId": SIGNAL_GROUP, "message": text},
-                "id":      self._req_id,
+                "id":      req_id,
             }
             self._sock.sendall((json.dumps(req) + "\n").encode())
+
+        try:
+            resp = resp_q.get(timeout=10)
+            return resp.get("result", {}).get("timestamp", 0)
+        except queue.Empty:
+            return 0
+        finally:
+            self._pending.pop(req_id, None)
 
     def drain(self) -> None:
         while not self._inbox.empty():
@@ -166,13 +191,18 @@ class _SignalSocket:
         return msgs
 
 
-def _parse_group_text(notification: dict) -> str | None:
+def _parse_signal_message(notification: dict) -> dict | None:
+    """Return {"text": str, "reply_to": int | None} if from our group."""
     try:
         envelope = notification["params"]["envelope"]
         data     = envelope.get("dataMessage", {})
         if data.get("groupInfo", {}).get("groupId") != SIGNAL_GROUP:
             return None
-        return data.get("message", "").strip() or None
+        text = data.get("message", "").strip()
+        if not text:
+            return None
+        quote_ts = data.get("quote", {}).get("id")   # ms timestamp of quoted msg
+        return {"text": text, "reply_to": quote_ts}
     except (KeyError, TypeError):
         return None
 
@@ -181,20 +211,21 @@ class SignalBackend(Backend):
     def __init__(self):
         self._client = _SignalSocket()
 
-    def send(self, text: str) -> None:
-        self._client.send(text)
+    def send(self, text: str) -> int:
+        ts = self._client.send(text)
         print(f"  → {text!r}")
+        return ts
 
     def drain(self) -> None:
         self._client.drain()
 
-    def receive(self, timeout: float) -> list[str]:
-        texts = []
+    def receive(self, timeout: float) -> list[dict]:
+        msgs = []
         for notif in self._client.get_messages(timeout=max(0.0, timeout)):
-            text = _parse_group_text(notif)
-            if text:
-                texts.append(text)
-        return texts
+            msg = _parse_signal_message(notif)
+            if msg:
+                msgs.append(msg)
+        return msgs
 
 
 # ── Telegram backend ──────────────────────────────────────────────────────────
@@ -218,12 +249,14 @@ class TelegramBackend(Backend):
         chat   = str(msg["chat"]["id"])
         return sender == str(OWNER_CHAT_ID) or chat == str(OWNER_CHAT_ID)
 
-    def send(self, text: str) -> None:
+    def send(self, text: str) -> int:
         payload: dict = {"chat_id": int(PING_CHAT_ID), "text": text}
         if PING_THREAD_ID:
             payload["message_thread_id"] = int(PING_THREAD_ID)
-        self._req.post(f"{self._base}/sendMessage", json=payload, timeout=10).raise_for_status()
+        resp = self._req.post(f"{self._base}/sendMessage", json=payload, timeout=10)
+        resp.raise_for_status()
         print(f"  → {text!r}")
+        return resp.json()["result"]["message_id"]
 
     def drain(self) -> None:
         while True:
@@ -232,7 +265,7 @@ class TelegramBackend(Backend):
                 break
             self._offset = updates[-1]["update_id"] + 1
 
-    def receive(self, timeout: float) -> list[str]:
+    def receive(self, timeout: float) -> list[dict]:
         if timeout <= 0:
             return []
         try:
@@ -241,16 +274,18 @@ class TelegramBackend(Backend):
             print(f"  poll error: {e}")
             time.sleep(3)
             return []
-        texts = []
+        msgs = []
         for upd in updates:
             self._offset = upd["update_id"] + 1
             msg = upd.get("message")
             if not msg or not self._is_owner(msg):
                 continue
             text = msg.get("text", "").strip()
-            if text:
-                texts.append(text)
-        return texts
+            if not text:
+                continue
+            reply_to = msg.get("reply_to_message", {}).get("message_id")
+            msgs.append({"text": text, "reply_to": reply_to})
+        return msgs
 
 
 # ── Active backend (set in main) ──────────────────────────────────────────────
@@ -258,8 +293,9 @@ class TelegramBackend(Backend):
 _backend: Backend | None = None
 
 
-def send_message(text: str) -> None:
-    _backend.send(text)
+def send_message(text: str) -> int:
+    """Send a message. Returns its identifier for reply detection."""
+    return _backend.send(text)
 
 
 # ── JSON helpers ──────────────────────────────────────────────────────────────
@@ -276,7 +312,7 @@ def load_data() -> dict:
     if not PINGS_FILE.exists():
         return {"pings": [], "days": {}}
     raw = json.loads(PINGS_FILE.read_text())
-    if isinstance(raw, list):       # migrate old flat-list format
+    if isinstance(raw, list):
         return {"pings": raw, "days": {}}
     return raw
 
@@ -362,49 +398,61 @@ def save_log_entry(text: str) -> None:
 
 # ── Poll helpers (backend-agnostic) ───────────────────────────────────────────
 
-def poll_for_yes(timeout_sec: int) -> bool:
-    """Wait up to timeout_sec for a yes. Other messages are logged."""
+def poll_for_yes(timeout_sec: int, sent_id: int) -> bool:
+    """
+    Wait up to timeout_sec for confirmation.
+    Accepts: a reply to sent_id (any text), or any yes-word.
+    Other messages are saved as log entries.
+    """
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
-        for text in _backend.receive(timeout=min(30.0, deadline - time.time())):
-            if text.lower() in YES_WORDS:
+        for msg in _backend.receive(timeout=min(30.0, deadline - time.time())):
+            if msg["reply_to"] == sent_id or msg["text"].lower() in YES_WORDS:
                 return True
-            save_log_entry(text)
+            save_log_entry(msg["text"])
     return False
 
 
-def poll_for_reply(code: str, sent_at_iso: str) -> dict:
-    """Block until a message containing [CODE] arrives."""
+def poll_for_reply(code: str, sent_at_iso: str, sent_id: int) -> dict:
+    """
+    Block until confirmed: a reply to sent_id, or a message containing [CODE].
+    Other messages are saved as log entries.
+    """
     print(f"  Waiting for reply to [{code}] …")
     while True:
-        for text in _backend.receive(timeout=30):
-            if code in text.upper():
-                replied_at = now_iso()
-                elapsed    = round(
-                    (datetime.fromisoformat(replied_at) - datetime.fromisoformat(sent_at_iso))
-                    .total_seconds()
-                )
-                entry = {
-                    "code":                  code,
-                    "question":              RANDOM_Q,
-                    "sent_at":               sent_at_iso,
-                    "replied_at":            replied_at,
-                    "response_time_seconds": elapsed,
-                    "answer":                text,
-                }
-                print(f"  Reply in {elapsed}s: {text!r}")
-                return entry
-            save_log_entry(text)
+        for msg in _backend.receive(timeout=30):
+            is_reply  = msg["reply_to"] == sent_id
+            has_code  = code in msg["text"].upper()
+            if not (is_reply or has_code):
+                save_log_entry(msg["text"])
+                continue
+            replied_at = now_iso()
+            elapsed    = round(
+                (datetime.fromisoformat(replied_at) - datetime.fromisoformat(sent_at_iso))
+                .total_seconds()
+            )
+            matched_by = "reply" if is_reply else "code"
+            entry = {
+                "code":                  code,
+                "question":              RANDOM_Q,
+                "sent_at":               sent_at_iso,
+                "replied_at":            replied_at,
+                "response_time_seconds": elapsed,
+                "answer":                msg["text"],
+                "matched_by":            matched_by,
+            }
+            print(f"  Reply in {elapsed}s ({matched_by}): {msg['text']!r}")
+            return entry
 
 
 def smart_wait(seconds: float, reminders: list) -> str:
-    """Wait, logging messages and returning early if a reminder falls due."""
+    """Wait, logging messages and interrupting if a reminder falls due."""
     deadline = time.time() + seconds
     while time.time() < deadline:
         if get_due_reminder(reminders, load_data(), datetime.now()):
             return "reminder_due"
-        for text in _backend.receive(timeout=min(30.0, deadline - time.time())):
-            save_log_entry(text)
+        for msg in _backend.receive(timeout=min(30.0, deadline - time.time())):
+            save_log_entry(msg["text"])
     return "done"
 
 
@@ -417,8 +465,8 @@ def run_reminder(reminder: dict) -> None:
     _backend.drain()
 
     while True:
-        send_message(reminder["message"])
-        if poll_for_yes(timeout_sec=repeat_sec):
+        sent_id = send_message(reminder["message"])
+        if poll_for_yes(timeout_sec=repeat_sec, sent_id=sent_id):
             confirmed_at = now_iso()
             data         = load_data()
             if record_as:
@@ -437,12 +485,12 @@ def one_ping() -> None:
     _backend.drain()
     code        = gen_code()
     sent_at_iso = now_iso()
-    send_message(f"[{code}] {RANDOM_Q}")
-    print(f"[{sent_at_iso}] Ping [{code}] sent")
+    sent_id     = send_message(f"[{code}] {RANDOM_Q}")
+    print(f"[{sent_at_iso}] Ping [{code}] sent  id={sent_id}")
 
-    save_json(STATE_FILE, {"pending_code": code, "sent_at_iso": sent_at_iso})
+    save_json(STATE_FILE, {"pending_code": code, "sent_at_iso": sent_at_iso, "sent_id": sent_id})
 
-    entry = poll_for_reply(code, sent_at_iso)
+    entry = poll_for_reply(code, sent_at_iso, sent_id)
     data  = load_data()
     data["pings"].append(entry)
     save_data(data)
@@ -484,8 +532,9 @@ def main() -> None:
     if state.get("pending_code"):
         code        = state["pending_code"]
         sent_at_iso = state["sent_at_iso"]
+        sent_id     = state.get("sent_id", 0)
         print(f"Resuming pending ping [{code}] from {sent_at_iso}")
-        entry = poll_for_reply(code, sent_at_iso)
+        entry = poll_for_reply(code, sent_at_iso, sent_id)
         data  = load_data()
         data["pings"].append(entry)
         save_data(data)
