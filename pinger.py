@@ -192,12 +192,10 @@ class _SignalSocket:
 
 
 def _parse_signal_message(notification: dict) -> dict | None:
-    """Return {"text": str, "reply_to": int | None} if from our group (not from self)."""
+    """Return {"text": str, "reply_to": int | None} if from our group."""
     try:
         envelope = notification["params"]["envelope"]
-        if envelope.get("sourceNumber") == SIGNAL_NUMBER:
-            return None                             # ignore the bot's own messages
-        data = envelope.get("dataMessage", {})
+        data     = envelope.get("dataMessage", {})
         if data.get("groupInfo", {}).get("groupId") != SIGNAL_GROUP:
             return None
         text = data.get("message", "").strip()
@@ -390,13 +388,102 @@ def next_event_time(reminders: list, data: dict, now: datetime) -> datetime:
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
-def save_log_entry(text: str) -> None:
-    data  = load_data()
-    entry = {"ts": now_iso(), "entry": text}
+def _save_log_entry(entry: dict) -> None:
+    data = load_data()
     data["days"].setdefault(today_str(), {}).setdefault("log", []).append(entry)
     save_data(data)
-    print(f"  Logged: {text!r}")
-    send_message(f"✓ Logged: {text}")
+    print(f"  Logged: {entry}")
+
+
+# ── Log follow-up dialog ──────────────────────────────────────────────────────
+
+def _wait_for_choice(options: list[str], timeout: int, sent_id: int) -> str | None:
+    """Wait for the first word of any group message to match an option."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for msg in _backend.receive(timeout=min(30.0, deadline - time.time())):
+            first = msg["text"].strip().split()[0] if msg["text"].strip() else ""
+            if first in options:
+                return first
+    return None
+
+
+def _wait_for_input(timeout: int, sent_id: int) -> str | None:
+    """Wait for any group message. Returns text or None on timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for msg in _backend.receive(timeout=min(30.0, deadline - time.time())):
+            return msg["text"].strip()
+    return None
+
+
+def _parse_duration(text: str) -> dict:
+    text = text.strip()
+    if ":" in text:
+        try:
+            h, m   = text.split(":", 1)
+            return {"type": "time", "minutes": int(h) * 60 + int(m)}
+        except (ValueError, IndexError):
+            pass
+    else:
+        try:
+            return {"type": "time", "minutes": int(text)}
+        except ValueError:
+            pass
+    return {"type": "time", "raw": text}
+
+
+def log_with_followup(text: str) -> None:
+    """Log a free-form entry then ask structured follow-up questions."""
+    entry: dict = {"ts": now_iso(), "entry": text}
+
+    # ── Quantity ──────────────────────────────────────────────────────────────
+    qty_id = send_message(
+        f'"{text}"\n\nQuantity?\n1 = None  2 = Ordinal (0–5)  3 = Metric'
+    )
+    qty = _wait_for_choice(["1", "2", "3"], timeout=180, sent_id=qty_id)
+
+    if qty == "2":
+        ord_id = send_message("Rate 0–5:")
+        val    = _wait_for_input(timeout=120, sent_id=ord_id)
+        if val and val.isdigit() and 0 <= int(val) <= 5:
+            entry["quantity"] = {"type": "ordinal", "value": int(val)}
+    elif qty == "3":
+        met_id = send_message("Quantity (e.g. '2 glasses', '500 ml'):")
+        val    = _wait_for_input(timeout=120, sent_id=met_id)
+        if val:
+            parts = val.split(None, 1)
+            if len(parts) == 2:
+                try:
+                    entry["quantity"] = {"type": "metric", "value": float(parts[0]), "unit": parts[1]}
+                except ValueError:
+                    entry["quantity"] = {"type": "metric", "raw": val}
+            else:
+                entry["quantity"] = {"type": "metric", "raw": val}
+
+    # ── Duration ──────────────────────────────────────────────────────────────
+    dur_id  = send_message("Duration?\n1 = None  2 = Time")
+    dur     = _wait_for_choice(["1", "2"], timeout=180, sent_id=dur_id)
+
+    if dur == "2":
+        time_id = send_message("Duration (hr:min or minutes — e.g. '1:30' or '45'):")
+        val     = _wait_for_input(timeout=120, sent_id=time_id)
+        if val:
+            entry["duration"] = _parse_duration(val)
+
+    # ── Result ────────────────────────────────────────────────────────────────
+    res_id = send_message("Result?\n1 = None  2 = Ordinal (0–5)")
+    res    = _wait_for_choice(["1", "2"], timeout=180, sent_id=res_id)
+
+    if res == "2":
+        ord_id = send_message("Rate 0–5:")
+        val    = _wait_for_input(timeout=120, sent_id=ord_id)
+        if val and val.isdigit() and 0 <= int(val) <= 5:
+            entry["result"] = {"type": "ordinal", "value": int(val)}
+
+    # ── Save ──────────────────────────────────────────────────────────────────
+    _save_log_entry(entry)
+    send_message("✓ Saved")
 
 
 # ── Poll helpers (backend-agnostic) ───────────────────────────────────────────
@@ -412,7 +499,7 @@ def poll_for_yes(timeout_sec: int, sent_id: int) -> bool:
         for msg in _backend.receive(timeout=min(30.0, deadline - time.time())):
             if msg["reply_to"] == sent_id or msg["text"].lower() in YES_WORDS:
                 return True
-            save_log_entry(msg["text"])
+            log_with_followup(msg["text"])
     return False
 
 
@@ -427,7 +514,7 @@ def poll_for_reply(code: str, sent_at_iso: str, sent_id: int) -> dict:
             is_reply  = msg["reply_to"] == sent_id
             has_code  = code in msg["text"].upper()
             if not (is_reply or has_code):
-                save_log_entry(msg["text"])
+                log_with_followup(msg["text"])
                 continue
             replied_at = now_iso()
             elapsed    = round(
@@ -455,7 +542,7 @@ def smart_wait(seconds: float, reminders: list) -> str:
         if get_due_reminder(reminders, load_data(), datetime.now()):
             return "reminder_due"
         for msg in _backend.receive(timeout=min(30.0, deadline - time.time())):
-            save_log_entry(msg["text"])
+            log_with_followup(msg["text"])
     return "done"
 
 
@@ -507,7 +594,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--backend", choices=["signal", "telegram"], default="signal",
+        "--backend", choices=["signal", "telegram"], default="telegram",
         help="Messaging backend (default: signal)",
     )
     parser.add_argument("--now", action="store_true", help="Fire one ping immediately and exit")
