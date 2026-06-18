@@ -192,10 +192,12 @@ class _SignalSocket:
 
 
 def _parse_signal_message(notification: dict) -> dict | None:
-    """Return {"text": str, "reply_to": int | None} if from our group."""
+    """Return {"text": str, "reply_to": int | None} if from our group (not from self)."""
     try:
         envelope = notification["params"]["envelope"]
-        data     = envelope.get("dataMessage", {})
+        if envelope.get("sourceNumber") == SIGNAL_NUMBER:
+            return None                             # ignore the bot's own messages
+        data = envelope.get("dataMessage", {})
         if data.get("groupInfo", {}).get("groupId") != SIGNAL_GROUP:
             return None
         text = data.get("message", "").strip()
@@ -394,6 +396,7 @@ def save_log_entry(text: str) -> None:
     data["days"].setdefault(today_str(), {}).setdefault("log", []).append(entry)
     save_data(data)
     print(f"  Logged: {text!r}")
+    send_message(f"✓ Logged: {text}")
 
 
 # ── Poll helpers (backend-agnostic) ───────────────────────────────────────────
