@@ -1,2 +1,6 @@
 .env
+data.json
 accountability_data.json
+__pycache__/
+*.pyc
+.venv/
