@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Franklin — Evening Review</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      <div class="flash">
+        {% for msg in messages %}<span>{{ msg }}</span>{% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  <h1>Evening Review</h1>
+
+  <form action="/save" method="POST">
+    <div class="grid-wrapper">
+      <table class="fault-grid">
+        <thead>
+          <tr>
+            <th class="virtue-col">Virtue</th>
+            {% for day in week_days %}
+              <th class="day-col{% if day.is_today %} today{% endif %}">{{ day.label }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for v in virtues %}
+            <tr class="{% if v.id == focus_id %}focus-row{% endif %}">
+              <td class="virtue-name" title="{{ v.precept }}">{{ v.name }}</td>
+              {% for day in week_days %}
+                <td class="day-cell{% if day.is_today %} today{% endif %}">
+                  {% if day.is_today %}
+                    <input
+                      type="number"
+                      name="mark_{{ v.id }}"
+                      min="0"
+                      step="1"
+                      value="{{ marks.get(day.date, {}).get(v.id, 0) }}"
+                      class="mark-input"
+                    >
+                  {% else %}
+                    {% set val = marks.get(day.date, {}).get(v.id, 0) %}
+                    <span class="mark-text">{{ val if val else '·' }}</span>
+                  {% endif %}
+                </td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="notes-section">
+      <h2>Add a note</h2>
+      <div class="note-fields">
+        <select name="note_virtue">
+          <option value="general">General</option>
+          {% for v in virtues %}
+            <option value="{{ v.id }}"{% if v.id == focus_id %} selected{% endif %}>{{ v.name }}</option>
+          {% endfor %}
+        </select>
+        <textarea name="note_text" rows="3" placeholder="Note (optional)"></textarea>
+      </div>
+    </div>
+
+    {% if recent_notes %}
+    <div class="recent-notes">
+      <h2>Recent notes</h2>
+      <ul>
+        {% for n in recent_notes %}
+          <li>
+            <span class="note-meta">{{ n.virtue_name }} · {{ n.date }}</span>
+            <span class="note-text">{{ n.text }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <div class="actions">
+      <button type="submit" class="btn-save">Save</button>
+      <form action="/shutdown" method="POST" style="display:inline">
+        <button type="submit" class="btn-shutdown">Shutdown</button>
+      </form>
+    </div>
+  </form>
+</body>
+</html>

@@ -40,10 +40,10 @@ pings.json output shape:
   SIGNAL_SOCKET   — path to daemon socket (default /run/signal-cli/socket)
 
 .env keys (Telegram):
-  TELEGRAM_TOKEN
-  OWNER_CHAT_ID
-  PING_CHAT_ID    (defaults to OWNER_CHAT_ID)
-  PING_THREAD_ID  (optional topic thread)
+  TELEGRAM_TOKEN  — default bot token
+  PING_BOT_ID     — separate bot token for pinger DMs (overrides TELEGRAM_TOKEN)
+
+  No chat ID needed — DM the bot once and it auto-registers you.
 """
 import argparse
 import json
@@ -68,9 +68,7 @@ SIGNAL_SOCKET = os.getenv("SIGNAL_SOCKET", "/run/signal-cli/socket")
 
 # Telegram env
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OWNER_CHAT_ID  = os.getenv("OWNER_CHAT_ID")
-PING_CHAT_ID   = os.getenv("PING_CHAT_ID", OWNER_CHAT_ID)
-PING_THREAD_ID = os.getenv("PING_THREAD_ID")
+PING_BOT_ID    = os.getenv("PING_BOT_ID")       # separate bot token for pinger; overrides TELEGRAM_TOKEN
 
 PINGS_FILE     = Path(__file__).parent / "pings.json"
 REMINDERS_FILE = Path(__file__).parent / "reminders.json"
@@ -230,11 +228,24 @@ class SignalBackend(Backend):
 
 # ── Telegram backend ──────────────────────────────────────────────────────────
 
+def _tg_get_owner_chat_id() -> int | None:
+    state = load_json(STATE_FILE, {})
+    return state.get("owner_chat_id")
+
+
+def _tg_set_owner_chat_id(chat_id: int) -> None:
+    state = load_json(STATE_FILE, {})
+    state["owner_chat_id"] = chat_id
+    save_json(STATE_FILE, state)
+    print(f"  Registered owner chat_id: {chat_id}")
+
+
 class TelegramBackend(Backend):
     def __init__(self):
         import requests as _req
         self._req    = _req
-        self._base   = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+        token        = PING_BOT_ID or TELEGRAM_TOKEN
+        self._base   = f"https://api.telegram.org/bot{token}"
         self._offset = 0
 
     def _get_updates(self, timeout: int = 30) -> list:
@@ -244,16 +255,16 @@ class TelegramBackend(Backend):
             timeout=timeout + 10,
         ).json().get("result", [])
 
-    def _is_owner(self, msg: dict) -> bool:
-        sender = str(msg.get("from", {}).get("id", ""))
-        chat   = str(msg["chat"]["id"])
-        return sender == str(OWNER_CHAT_ID) or chat == str(OWNER_CHAT_ID)
-
     def send(self, text: str) -> int:
-        payload: dict = {"chat_id": int(PING_CHAT_ID), "text": text}
-        if PING_THREAD_ID:
-            payload["message_thread_id"] = int(PING_THREAD_ID)
-        resp = self._req.post(f"{self._base}/sendMessage", json=payload, timeout=10)
+        chat_id = _tg_get_owner_chat_id()
+        if chat_id is None:
+            print("  send skipped — no owner registered yet (DM the bot first)")
+            return 0
+        resp = self._req.post(
+            f"{self._base}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=10,
+        )
         resp.raise_for_status()
         print(f"  → {text!r}")
         return resp.json()["result"]["message_id"]
@@ -275,10 +286,17 @@ class TelegramBackend(Backend):
             time.sleep(3)
             return []
         msgs = []
+        owner = _tg_get_owner_chat_id()
         for upd in updates:
             self._offset = upd["update_id"] + 1
             msg = upd.get("message")
-            if not msg or not self._is_owner(msg):
+            if not msg:
+                continue
+            chat_id = msg["chat"]["id"]
+            if owner is None:
+                _tg_set_owner_chat_id(chat_id)
+                owner = chat_id
+            elif chat_id != owner:
                 continue
             text = msg.get("text", "").strip()
             if not text:
@@ -608,12 +626,12 @@ def main() -> None:
         _backend = SignalBackend()
         print(f"Backend: Signal  |  socket: {SIGNAL_SOCKET}")
     else:
-        if not TELEGRAM_TOKEN:
-            raise ValueError("TELEGRAM_TOKEN not set in .env")
-        if not OWNER_CHAT_ID:
-            raise ValueError("OWNER_CHAT_ID not set in .env")
+        if not (PING_BOT_ID or TELEGRAM_TOKEN):
+            raise ValueError("PING_BOT_ID or TELEGRAM_TOKEN not set in .env")
         _backend = TelegramBackend()
-        print(f"Backend: Telegram  |  chat: {PING_CHAT_ID}")
+        token_src = "PING_BOT_ID" if PING_BOT_ID else "TELEGRAM_TOKEN"
+        owner = _tg_get_owner_chat_id()
+        print(f"Backend: Telegram  |  token: {token_src}  |  owner: {owner or '(waiting for first DM)'}")
 
     print(f"Random ping window: {WINDOW_START}:00–{WINDOW_END}:00")
 
