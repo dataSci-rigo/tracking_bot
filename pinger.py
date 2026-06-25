@@ -229,14 +229,16 @@ class SignalBackend(Backend):
 # ── Telegram backend ──────────────────────────────────────────────────────────
 
 def _tg_get_owner_chat_id() -> int | None:
-    state = load_json(STATE_FILE, {})
-    return state.get("owner_chat_id")
+    raw = json.loads(PINGS_FILE.read_text()) if PINGS_FILE.exists() else {}
+    if isinstance(raw, list):
+        return None
+    return raw.get("owner_chat_id")
 
 
 def _tg_set_owner_chat_id(chat_id: int) -> None:
-    state = load_json(STATE_FILE, {})
-    state["owner_chat_id"] = chat_id
-    save_json(STATE_FILE, state)
+    data = load_data()   # always returns a dict with "pings" / "days"
+    data["owner_chat_id"] = chat_id
+    save_data(data)
     print(f"  Registered owner chat_id: {chat_id}")
 
 

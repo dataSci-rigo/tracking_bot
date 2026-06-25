@@ -36,12 +36,13 @@ SIGNAL_NUMBER = os.getenv("SIGNAL_NUMBER")
 SIGNAL_GROUP  = os.getenv("SIGNAL_GROUP")
 SIGNAL_SOCKET = os.getenv("SIGNAL_SOCKET", "/run/signal-cli/socket")
 
-DATA_FILE = Path(__file__).parent / "accountability_data.json"
+DATA_FILE  = Path(__file__).parent / "accountability_data.json"
+PAUSE_FILE = Path(__file__).parent / "pause_state.json"
 
 PT = ZoneInfo("America/Los_Angeles")
 
 WINDOW_START  = 7   # 7 AM PT  — random check-ins begin / morning plan
-WINDOW_END    = 22  # 10 PM PT — evening review fires, check-ins stop
+WINDOW_END    = 23  # 11 PM PT — evening review fires, check-ins stop
 
 MIN_GAP_MIN   = 60
 MAX_GAP_MIN   = 150
@@ -163,14 +164,73 @@ def parse_group_message(notification: dict) -> str | None:
 
 
 def wait_for_any(timeout: float) -> str | None:
-    """Block until any group message arrives. Returns text or None on timeout."""
+    """Block until a non-command group message arrives. Returns text or None on timeout."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         for notif in sig().get_messages(timeout=min(30.0, deadline - time.time())):
             text = parse_group_message(notif)
             if text:
-                return text
+                if handle_command(text):
+                    if is_paused():
+                        return None  # abort current session
+                else:
+                    return text
     return None
+
+
+# ── Pause state ──────────────────────────────────────────────────────────────
+
+def is_paused() -> bool:
+    return PAUSE_FILE.exists()
+
+def pause_bot(reason: str) -> None:
+    PAUSE_FILE.write_text(json.dumps({
+        "paused_at": now_pt().isoformat(),
+        "reason": reason,
+    }, indent=2))
+    send_message(f"Paused. Reason: {reason}\nSend /resume when you're ready.")
+    print(f"[{now_str()}] PAUSED — {reason}")
+
+def resume_bot() -> None:
+    PAUSE_FILE.unlink(missing_ok=True)
+    send_message("Resumed! Check-ins will continue.")
+    print(f"[{now_str()}] RESUMED")
+
+def handle_command(text: str) -> bool:
+    """Process /pause and /resume. Returns True if it was a command."""
+    lower = text.strip().lower()
+    if lower.startswith("/pause"):
+        reason = text.strip()[6:].strip() or "no reason given"
+        pause_bot(reason)
+        return True
+    if lower == "/resume":
+        if is_paused():
+            resume_bot()
+        else:
+            send_message("Bot is not paused.")
+        return True
+    if lower == "/status":
+        if is_paused():
+            state = json.loads(PAUSE_FILE.read_text())
+            send_message(f"Paused since {state['paused_at']}\nReason: {state['reason']}")
+        else:
+            send_message("Running normally.")
+        return True
+    return False
+
+
+def interruptible_sleep(seconds: float) -> None:
+    """Sleep in 30s chunks, processing commands in between."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        chunk = min(30.0, deadline - time.time())
+        if chunk <= 0:
+            break
+        msgs = sig().get_messages(timeout=chunk)
+        for msg in msgs:
+            text = parse_group_message(msg)
+            if text:
+                handle_command(text)
 
 
 # ── Time helpers (PT) ─────────────────────────────────────────────────────────
@@ -324,20 +384,27 @@ def main() -> None:
         today = today_str()
         data  = load_data()
 
+        # Paused — wait in 30s chunks listening for /resume
+        if is_paused():
+            state = json.loads(PAUSE_FILE.read_text())
+            print(f"[{now_str()}] Paused ({state['reason']}). Waiting for /resume...")
+            interruptible_sleep(300)
+            continue
+
         # Before 7am: sleep until window opens
         if now.hour < WINDOW_START:
             wait = seconds_until_hour_pt(WINDOW_START)
             print(f"[{now_str()}] Before window. Sleeping {wait/3600:.1f}h until {WINDOW_START}:00 PT")
-            time.sleep(wait)
+            interruptible_sleep(wait)
             continue
 
-        # 10pm+: evening review then sleep
+        # 11pm+: evening review then sleep
         if now.hour >= WINDOW_END:
             if "evening_review" not in data["days"].get(today, {}):
                 evening_session()
             wait = seconds_until_hour_pt(WINDOW_START)
             print(f"[{now_str()}] Evening done. Sleeping {wait/3600:.1f}h until {WINDOW_START}:00 PT")
-            time.sleep(wait)
+            interruptible_sleep(wait)
             continue
 
         # Morning plan (once per day)
@@ -346,20 +413,20 @@ def main() -> None:
             continue
 
         # Random check-in
-        gap_sec   = random.randint(MIN_GAP_MIN * 60, MAX_GAP_MIN * 60)
+        gap_sec      = random.randint(MIN_GAP_MIN * 60, MAX_GAP_MIN * 60)
         window_close = now.replace(hour=WINDOW_END, minute=0, second=0, microsecond=0)
-        closes_in = (window_close - now).total_seconds()
+        closes_in    = (window_close - now).total_seconds()
 
         if gap_sec > closes_in:
             print(f"[{now_str()}] Gap exceeds window. Waiting until {WINDOW_END}:00 PT")
-            time.sleep(closes_in)
+            interruptible_sleep(closes_in)
             continue
 
         wake_at = now + timedelta(seconds=gap_sec)
         print(f"[{now_str()}] Next check-in at {wake_at.strftime('%H:%M')} PT ({gap_sec // 60}m)")
-        time.sleep(gap_sec)
+        interruptible_sleep(gap_sec)
 
-        if WINDOW_START <= now_pt().hour < WINDOW_END:
+        if WINDOW_START <= now_pt().hour < WINDOW_END and not is_paused():
             try:
                 run_checkin()
             except Exception as e:

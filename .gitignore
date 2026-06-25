@@ -1,6 +1,10 @@
 .env
 data.json
 accountability_data.json
+pings.json
+reminders.json
+franklin/config.json
+franklin/inspiration.json
 __pycache__/
 *.pyc
 .venv/

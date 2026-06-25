@@ -13,7 +13,17 @@ def load_config() -> dict:
         return json.load(f)
 
 
+_DATA_DEFAULT = {"marks": {}, "todos": [], "notes": [], "focus_history": [], "next_id": 1}
+
+
+def _ensure_data_file() -> None:
+    if not os.path.exists(_DATA_PATH):
+        with open(_DATA_PATH, "w") as f:
+            json.dump(_DATA_DEFAULT, f, indent=2)
+
+
 def load_data() -> dict:
+    _ensure_data_file()
     with open(_DATA_PATH, "r") as f:
         return json.load(f)
 
