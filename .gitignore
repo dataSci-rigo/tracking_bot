@@ -8,3 +8,4 @@ franklin/inspiration.json
 __pycache__/
 *.pyc
 .venv/
+instructions
