@@ -181,15 +181,34 @@ def wait_for_any(timeout: float) -> str | None:
 # ── Pause state ──────────────────────────────────────────────────────────────
 
 def is_paused() -> bool:
-    return PAUSE_FILE.exists()
+    if not PAUSE_FILE.exists():
+        return False
+    state = json.loads(PAUSE_FILE.read_text())
+    resume_at = state.get("resume_at")
+    if resume_at and datetime.fromisoformat(resume_at) <= now_pt():
+        PAUSE_FILE.unlink(missing_ok=True)
+        print(f"[{now_str()}] Pause expired, auto-resumed")
+        return False
+    return True
 
-def pause_bot(reason: str) -> None:
+def pause_bot(hours: float | None = None) -> None:
+    now = now_pt()
+    if hours is not None:
+        resume_at = now + timedelta(hours=hours)
+        until_str = resume_at.strftime("%H:%M")
+        msg = f"Paused for {hours:.4g}h (until {until_str} PT). Send /resume to end early."
+    else:
+        # Rest of day: resume at WINDOW_END
+        resume_at = now.replace(hour=WINDOW_END, minute=0, second=0, microsecond=0)
+        if now >= resume_at:
+            resume_at += timedelta(days=1)
+        msg = f"Paused for the rest of the day (until {WINDOW_END}:00 PT). Evening review will still run."
     PAUSE_FILE.write_text(json.dumps({
-        "paused_at": now_pt().isoformat(),
-        "reason": reason,
+        "paused_at": now.isoformat(),
+        "resume_at": resume_at.isoformat(),
     }, indent=2))
-    send_message(f"Paused. Reason: {reason}\nSend /resume when you're ready.")
-    print(f"[{now_str()}] PAUSED — {reason}")
+    send_message(msg)
+    print(f"[{now_str()}] PAUSED until {resume_at.isoformat()}")
 
 def resume_bot() -> None:
     PAUSE_FILE.unlink(missing_ok=True)
@@ -197,25 +216,72 @@ def resume_bot() -> None:
     print(f"[{now_str()}] RESUMED")
 
 def handle_command(text: str) -> bool:
-    """Process /pause and /resume. Returns True if it was a command."""
-    lower = text.strip().lower()
+    """Process bot commands. Returns True if it was a command."""
+    stripped = text.strip()
+    lower    = stripped.lower()
+
     if lower.startswith("/pause"):
-        reason = text.strip()[6:].strip() or "no reason given"
-        pause_bot(reason)
+        arg = stripped[6:].strip()
+        try:
+            hours = float(arg) if arg else None
+        except ValueError:
+            send_message("Usage: /pause [hours] — e.g. /pause 2 or /pause for rest of day")
+            return True
+        pause_bot(hours)
         return True
+
     if lower == "/resume":
         if is_paused():
             resume_bot()
         else:
             send_message("Bot is not paused.")
         return True
+
     if lower == "/status":
         if is_paused():
             state = json.loads(PAUSE_FILE.read_text())
-            send_message(f"Paused since {state['paused_at']}\nReason: {state['reason']}")
+            resume_at = state.get("resume_at", "unknown")
+            send_message(f"Paused since {state['paused_at'][:16]}\nResumes at: {resume_at[:16]}")
         else:
             send_message("Running normally.")
         return True
+
+    if lower.startswith("/sum"):
+        summary = stripped[4:].strip()
+        if not summary:
+            send_message("Usage: /sum <your summary> — e.g. /sum Got 3 of 4 tasks done")
+            return True
+        data = load_data()
+        data["days"].setdefault(today_str(), {})["summary"] = summary
+        save_data(data)
+        send_message(f"Summary saved: {summary}")
+        return True
+
+    if lower.startswith("/goals"):
+        goals = stripped[6:].strip()
+        if not goals:
+            send_message("Usage: /goals <your goals> — e.g. /goals Finish report, gym, call mom")
+            return True
+        data = load_data()
+        data["days"].setdefault(today_str(), {})["goals"] = goals
+        save_data(data)
+        send_message(f"Goals saved: {goals}")
+        return True
+
+    if lower == "/help":
+        send_message(
+            "Accountability Bot\n\n"
+            "/pause [hours] — pause check-ins (e.g. /pause 2 or /pause for rest of day)\n"
+            "/resume — end a pause early\n"
+            "/status — show pause state\n"
+            "/sum <text> — save a daily summary\n"
+            "/goals <text> — save today's goals\n"
+            "/help — show this message\n\n"
+            f"Schedule (PT): {WINDOW_START}:00 morning plan · check-ins every "
+            f"{MIN_GAP_MIN}–{MAX_GAP_MIN} min · {WINDOW_END}:00 evening review"
+        )
+        return True
+
     return False
 
 
@@ -384,11 +450,12 @@ def main() -> None:
         today = today_str()
         data  = load_data()
 
-        # Paused — wait in 30s chunks listening for /resume
+        # Paused — still fire evening review, otherwise idle
         if is_paused():
-            state = json.loads(PAUSE_FILE.read_text())
-            print(f"[{now_str()}] Paused ({state['reason']}). Waiting for /resume...")
-            interruptible_sleep(300)
+            if now.hour >= WINDOW_END and "evening_review" not in data["days"].get(today, {}):
+                evening_session()
+            else:
+                interruptible_sleep(60)
             continue
 
         # Before 7am: sleep until window opens

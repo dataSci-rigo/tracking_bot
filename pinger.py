@@ -67,8 +67,10 @@ SIGNAL_GROUP  = os.getenv("SIGNAL_GROUP")
 SIGNAL_SOCKET = os.getenv("SIGNAL_SOCKET", "/run/signal-cli/socket")
 
 # Telegram env
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-PING_BOT_ID    = os.getenv("PING_BOT_ID")       # separate bot token for pinger; overrides TELEGRAM_TOKEN
+TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
+PING_BOT_ID       = os.getenv("PING_BOT_ID")        # separate bot token for pinger; overrides TELEGRAM_TOKEN
+PINGER_CHANNEL_ID = int(os.getenv("PINGER_CHANNEL_ID", "0") or "0")  # e.g. -1003955681692
+PINGER_THREAD_ID  = int(os.getenv("PINGER_THREAD_ID",  "0") or "0")  # e.g. 4
 
 PINGS_FILE     = Path(__file__).parent / "pings.json"
 REMINDERS_FILE = Path(__file__).parent / "reminders.json"
@@ -97,6 +99,12 @@ YES_WORDS = {"yes", "y", "yeah", "yep", "yup"}
 class Backend:
     def send(self, text: str) -> int:
         raise NotImplementedError
+
+    def send_buttons(self, text: str, rows: list[list[tuple[str, str]]]) -> int:
+        """Send message with button rows. Each button is (label, value).
+        Falls back to plain text with options listed."""
+        options = " | ".join(v for row in rows for _, v in row)
+        return self.send(f"{text}\n({options})")
 
     def drain(self) -> None:
         raise NotImplementedError
@@ -214,6 +222,12 @@ class SignalBackend(Backend):
         print(f"  → {text!r}")
         return ts
 
+    def send_buttons(self, text: str, rows: list[list[tuple[str, str]]]) -> int:
+        lines = [text]
+        for row in rows:
+            lines.append("  " + "   ".join(f"{v}={label}" for label, v in row))
+        return self.send("\n".join(lines))
+
     def drain(self) -> None:
         self._client.drain()
 
@@ -258,18 +272,42 @@ class TelegramBackend(Backend):
         ).json().get("result", [])
 
     def send(self, text: str) -> int:
-        chat_id = _tg_get_owner_chat_id()
-        if chat_id is None:
-            print("  send skipped — no owner registered yet (DM the bot first)")
-            return 0
-        resp = self._req.post(
-            f"{self._base}/sendMessage",
-            json={"chat_id": chat_id, "text": text},
-            timeout=10,
-        )
+        return self._send_raw(text, reply_markup=None)
+
+    def send_buttons(self, text: str, rows: list[list[tuple[str, str]]]) -> int:
+        keyboard = [[{"text": label, "callback_data": value} for label, value in row]
+                    for row in rows]
+        return self._send_raw(text, reply_markup={"inline_keyboard": keyboard})
+
+    def _send_raw(self, text: str, reply_markup) -> int:
+        if PINGER_CHANNEL_ID:
+            chat_id   = PINGER_CHANNEL_ID
+            thread_id = PINGER_THREAD_ID or None
+        else:
+            chat_id = _tg_get_owner_chat_id()
+            if chat_id is None:
+                print("  send skipped — no owner registered yet (DM the bot first)")
+                return 0
+            thread_id = None
+        payload = {"chat_id": chat_id, "text": text}
+        if thread_id:
+            payload["message_thread_id"] = thread_id
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        resp = self._req.post(f"{self._base}/sendMessage", json=payload, timeout=10)
         resp.raise_for_status()
         print(f"  → {text!r}")
         return resp.json()["result"]["message_id"]
+
+    def _answer_callback(self, callback_query_id: str) -> None:
+        try:
+            self._req.post(
+                f"{self._base}/answerCallbackQuery",
+                json={"callback_query_id": callback_query_id},
+                timeout=5,
+            )
+        except Exception:
+            pass
 
     def drain(self) -> None:
         while True:
@@ -277,6 +315,17 @@ class TelegramBackend(Backend):
             if not updates:
                 break
             self._offset = updates[-1]["update_id"] + 1
+
+    def _msg_matches(self, msg: dict) -> bool:
+        """True if this message is from the configured channel/thread or owner DM."""
+        if PINGER_CHANNEL_ID:
+            if msg.get("chat", {}).get("id") != PINGER_CHANNEL_ID:
+                return False
+            if PINGER_THREAD_ID and msg.get("message_thread_id") != PINGER_THREAD_ID:
+                return False
+            return True
+        # DM mode
+        return msg.get("chat", {}).get("id") == _tg_get_owner_chat_id()
 
     def receive(self, timeout: float) -> list[dict]:
         if timeout <= 0:
@@ -288,17 +337,33 @@ class TelegramBackend(Backend):
             time.sleep(3)
             return []
         msgs = []
-        owner = _tg_get_owner_chat_id()
         for upd in updates:
             self._offset = upd["update_id"] + 1
+
+            # Inline button tap
+            cq = upd.get("callback_query")
+            if cq:
+                self._answer_callback(cq["id"])
+                cq_msg = cq.get("message", {})
+                if PINGER_CHANNEL_ID:
+                    if self._msg_matches(cq_msg):
+                        msgs.append({"text": cq["data"], "reply_to": None})
+                else:
+                    if cq["from"]["id"] == (_tg_get_owner_chat_id() or cq["from"]["id"]):
+                        msgs.append({"text": cq["data"], "reply_to": None})
+                continue
+
             msg = upd.get("message")
             if not msg:
                 continue
-            chat_id = msg["chat"]["id"]
-            if owner is None:
-                _tg_set_owner_chat_id(chat_id)
-                owner = chat_id
-            elif chat_id != owner:
+
+            # Auto-register owner on first DM (only in DM mode)
+            if not PINGER_CHANNEL_ID:
+                owner = _tg_get_owner_chat_id()
+                if owner is None:
+                    _tg_set_owner_chat_id(msg["chat"]["id"])
+
+            if not self._msg_matches(msg):
                 continue
             text = msg.get("text", "").strip()
             if not text:
@@ -418,13 +483,14 @@ def _save_log_entry(entry: dict) -> None:
 # ── Log follow-up dialog ──────────────────────────────────────────────────────
 
 def _wait_for_choice(options: list[str], timeout: int, sent_id: int) -> str | None:
-    """Wait for the first word of any group message to match an option."""
+    """Wait for a button tap or the first word of a message matching an option."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         for msg in _backend.receive(timeout=min(30.0, deadline - time.time())):
-            first = msg["text"].strip().split()[0] if msg["text"].strip() else ""
-            if first in options:
-                return first
+            text  = msg["text"].strip()
+            first = text.split()[0] if text else ""
+            if text in options or first in options:
+                return text if text in options else first
     return None
 
 
@@ -453,24 +519,28 @@ def _parse_duration(text: str) -> dict:
     return {"type": "time", "raw": text}
 
 
+_RATING_BUTTONS = [[("0", "0"), ("1", "1"), ("2", "2"), ("3", "3"), ("4", "4"), ("5", "5")]]
+
+
 def log_with_followup(text: str) -> None:
     """Log a free-form entry then ask structured follow-up questions."""
     entry: dict = {"ts": now_iso(), "entry": text}
 
     # ── Quantity ──────────────────────────────────────────────────────────────
-    qty_id = send_message(
-        f'"{text}"\n\nQuantity?\n1 = None  2 = Ordinal (0–5)  3 = Metric'
+    _backend.send_buttons(
+        f'"{text}"\n\nQuantity?',
+        [[("None", "1"), ("Rate 0–5", "2"), ("Metric", "3")]],
     )
-    qty = _wait_for_choice(["1", "2", "3"], timeout=180, sent_id=qty_id)
+    qty = _wait_for_choice(["1", "2", "3"], timeout=180, sent_id=0)
 
     if qty == "2":
-        ord_id = send_message("Rate 0–5:")
-        val    = _wait_for_input(timeout=120, sent_id=ord_id)
-        if val and val.isdigit() and 0 <= int(val) <= 5:
+        _backend.send_buttons("Rate quantity 0–5:", _RATING_BUTTONS)
+        val = _wait_for_choice([str(i) for i in range(6)], timeout=120, sent_id=0)
+        if val is not None:
             entry["quantity"] = {"type": "ordinal", "value": int(val)}
     elif qty == "3":
-        met_id = send_message("Quantity (e.g. '2 glasses', '500 ml'):")
-        val    = _wait_for_input(timeout=120, sent_id=met_id)
+        send_message("Quantity (e.g. '2 glasses', '500 ml'):")
+        val = _wait_for_input(timeout=120, sent_id=0)
         if val:
             parts = val.split(None, 1)
             if len(parts) == 2:
@@ -482,23 +552,23 @@ def log_with_followup(text: str) -> None:
                 entry["quantity"] = {"type": "metric", "raw": val}
 
     # ── Duration ──────────────────────────────────────────────────────────────
-    dur_id  = send_message("Duration?\n1 = None  2 = Time")
-    dur     = _wait_for_choice(["1", "2"], timeout=180, sent_id=dur_id)
+    _backend.send_buttons("Duration?", [[("None", "1"), ("Add time", "2")]])
+    dur = _wait_for_choice(["1", "2"], timeout=180, sent_id=0)
 
     if dur == "2":
-        time_id = send_message("Duration (hr:min or minutes — e.g. '1:30' or '45'):")
-        val     = _wait_for_input(timeout=120, sent_id=time_id)
+        send_message("Duration (hr:min or minutes — e.g. '1:30' or '45'):")
+        val = _wait_for_input(timeout=120, sent_id=0)
         if val:
             entry["duration"] = _parse_duration(val)
 
     # ── Result ────────────────────────────────────────────────────────────────
-    res_id = send_message("Result?\n1 = None  2 = Ordinal (0–5)")
-    res    = _wait_for_choice(["1", "2"], timeout=180, sent_id=res_id)
+    _backend.send_buttons("Result?", [[("None", "1"), ("Rate 0–5", "2")]])
+    res = _wait_for_choice(["1", "2"], timeout=180, sent_id=0)
 
     if res == "2":
-        ord_id = send_message("Rate 0–5:")
-        val    = _wait_for_input(timeout=120, sent_id=ord_id)
-        if val and val.isdigit() and 0 <= int(val) <= 5:
+        _backend.send_buttons("Rate result 0–5:", _RATING_BUTTONS)
+        val = _wait_for_choice([str(i) for i in range(6)], timeout=120, sent_id=0)
+        if val is not None:
             entry["result"] = {"type": "ordinal", "value": int(val)}
 
     # ── Save ──────────────────────────────────────────────────────────────────

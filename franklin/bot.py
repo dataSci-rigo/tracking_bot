@@ -5,7 +5,7 @@ import os
 import subprocess
 import traceback
 
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 import store
@@ -15,6 +15,23 @@ logger = logging.getLogger(__name__)
 
 _app: Application | None = None
 
+# Optional channel mode: if set, Franklin listens/sends to this channel topic
+FRANKLIN_CHANNEL_ID = int(os.environ.get("FRANKLIN_CHANNEL_ID", "0") or "0")
+FRANKLIN_THREAD_ID  = int(os.environ.get("FRANKLIN_THREAD_ID",  "0") or "0")
+
+
+def _is_authorized(update: Update) -> bool:
+    """Allow messages from the configured channel topic or the registered owner DM."""
+    if FRANKLIN_CHANNEL_ID:
+        if update.effective_chat.id != FRANKLIN_CHANNEL_ID:
+            return False
+        if FRANKLIN_THREAD_ID:
+            thread = getattr(update.effective_message, "message_thread_id", None)
+            return thread == FRANKLIN_THREAD_ID
+        return True
+    allowed_id = store.get_owner_chat_id()
+    return allowed_id is not None and update.effective_chat.id == allowed_id
+
 
 # ---------------------------------------------------------------------------
 # Decorators
@@ -23,12 +40,11 @@ _app: Application | None = None
 def _only_owner(handler):
     @functools.wraps(handler)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        allowed_id = store.get_owner_chat_id()
-        if allowed_id is None:
-            await update.message.reply_text("Send /start to register as owner first.")
-            return
-        if update.effective_chat.id != allowed_id:
-            logger.warning("Blocked message from chat %s", update.effective_chat.id)
+        if not _is_authorized(update):
+            if store.get_owner_chat_id() is None and not FRANKLIN_CHANNEL_ID:
+                await update.message.reply_text("Send /start to register as owner first.")
+            else:
+                logger.warning("Blocked message from chat %s", update.effective_chat.id)
             return
         return await handler(update, context)
     return wrapper
@@ -155,29 +171,39 @@ def build_weekly_summary() -> str:
 # Command handlers
 # ---------------------------------------------------------------------------
 
+_HELP_TEXT = (
+    "🏛 *Franklin* — virtue tracker & daily planner\n\n"
+    "/today — morning prompt + focus virtue\n"
+    "/focus — current focus virtue\n"
+    "/virtues — list all 13 virtues\n"
+    "/todo `<text>` — add a todo\n"
+    "/done `<id>` — mark todo done\n"
+    "/cancel `<id>` — cancel a todo\n"
+    "/note `<text>` — add a note\n"
+    "/coach — reflection from Claude\n"
+    "/summary — weekly recap\n"
+    "/web — open the evening review form\n"
+    "/help — show this message"
+)
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     existing = store.get_owner_chat_id()
-    if existing is None:
-        store.set_owner_chat_id(chat_id)
-        logger.info("Owner registered: chat_id=%s", chat_id)
-    elif existing != chat_id:
-        logger.warning("Ignoring /start from unknown chat %s", chat_id)
-        return
-    await update.message.reply_text(
-        "Franklin virtue tracker online.\n\n"
-        "Commands:\n"
-        "/today — morning prompt\n"
-        "/focus — current focus virtue\n"
-        "/virtues — list all 13\n"
-        "/todo <text> — add a todo\n"
-        "/done <id> — mark todo done\n"
-        "/cancel <id> — cancel a todo\n"
-        "/note <text> — add a note\n"
-        "/coach — get a reflection from Claude\n"
-        "/summary — weekly recap\n"
-        "/web — start the evening form"
-    )
+    if not FRANKLIN_CHANNEL_ID:
+        if existing is None:
+            store.set_owner_chat_id(chat_id)
+            logger.info("Owner registered: chat_id=%s", chat_id)
+        elif existing != chat_id:
+            logger.warning("Ignoring /start from unknown chat %s", chat_id)
+            return
+    await update.message.reply_text("Franklin virtue tracker online.\n\n" + _HELP_TEXT,
+                                    parse_mode="Markdown")
+
+
+@_gate
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(_HELP_TEXT, parse_mode="Markdown")
 
 
 @_gate
@@ -332,6 +358,12 @@ async def send_message(text: str) -> None:
     if _app is None:
         logger.error("send_message called before app initialized")
         return
+    if FRANKLIN_CHANNEL_ID:
+        kwargs = {"chat_id": FRANKLIN_CHANNEL_ID, "text": text, "parse_mode": "Markdown"}
+        if FRANKLIN_THREAD_ID:
+            kwargs["message_thread_id"] = FRANKLIN_THREAD_ID
+        await _app.bot.send_message(**kwargs)
+        return
     chat_id = store.get_owner_chat_id()
     if chat_id is None:
         logger.warning("send_to_owner: no owner registered yet")
@@ -339,22 +371,39 @@ async def send_message(text: str) -> None:
     await _app.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
 
 
+async def _post_init(app: Application) -> None:
+    await app.bot.set_my_commands([
+        BotCommand("today",    "Morning prompt + focus virtue"),
+        BotCommand("focus",    "Current focus virtue"),
+        BotCommand("virtues",  "List all 13 virtues"),
+        BotCommand("todo",     "Add a todo: /todo finish report"),
+        BotCommand("done",     "Mark todo done: /done 3"),
+        BotCommand("cancel",   "Cancel a todo: /cancel 3"),
+        BotCommand("note",     "Add a note"),
+        BotCommand("coach",    "Reflection from Claude"),
+        BotCommand("summary",  "Weekly recap"),
+        BotCommand("web",      "Open the evening review form"),
+        BotCommand("help",     "Show all commands"),
+    ])
+
+
 def build_application() -> Application:
     global _app
     token = os.environ["franklin_3149987_bot"]
-    _app = Application.builder().token(token).build()
+    _app = Application.builder().token(token).post_init(_post_init).build()
 
-    _app.add_handler(CommandHandler("start", cmd_start))
-    _app.add_handler(CommandHandler("today", cmd_today))
-    _app.add_handler(CommandHandler("focus", cmd_focus))
+    _app.add_handler(CommandHandler("start",   cmd_start))
+    _app.add_handler(CommandHandler("help",    cmd_help))
+    _app.add_handler(CommandHandler("today",   cmd_today))
+    _app.add_handler(CommandHandler("focus",   cmd_focus))
     _app.add_handler(CommandHandler("virtues", cmd_virtues))
-    _app.add_handler(CommandHandler("todo", cmd_todo))
-    _app.add_handler(CommandHandler("done", cmd_done))
-    _app.add_handler(CommandHandler("cancel", cmd_cancel))
-    _app.add_handler(CommandHandler("note", cmd_note))
-    _app.add_handler(CommandHandler("coach", cmd_coach))
+    _app.add_handler(CommandHandler("todo",    cmd_todo))
+    _app.add_handler(CommandHandler("done",    cmd_done))
+    _app.add_handler(CommandHandler("cancel",  cmd_cancel))
+    _app.add_handler(CommandHandler("note",    cmd_note))
+    _app.add_handler(CommandHandler("coach",   cmd_coach))
     _app.add_handler(CommandHandler("summary", cmd_summary))
-    _app.add_handler(CommandHandler("web", cmd_web))
+    _app.add_handler(CommandHandler("web",     cmd_web))
 
     if os.environ.get("DEBUG_JOBS"):
         _app.add_handler(CommandHandler("debug_fire", cmd_debug_fire))
