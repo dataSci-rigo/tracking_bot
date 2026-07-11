@@ -276,15 +276,13 @@ async def main_loop(bot: Bot) -> None:
 
 # ── Telegram update handlers ──────────────────────────────────────────────────
 
-def _in_thread(update: Update) -> bool:
+def _from_group(update: Update) -> bool:
     msg = update.effective_message
-    if msg is None:
-        return False
-    return msg.chat_id == CHANNEL_ID and msg.message_thread_id == THREAD_ID
+    return msg is not None and msg.chat_id == CHANNEL_ID
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _in_thread(update):
+    if not _from_group(update):
         return
     text = (update.effective_message.text or "").strip()
     if not text or text.startswith("/"):
@@ -293,7 +291,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _in_thread(update):
+    if not _from_group(update):
         return
     bot = context.bot
     args_text = " ".join(context.args or [])
@@ -317,7 +315,7 @@ async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _in_thread(update):
+    if not _from_group(update):
         return
     if is_paused():
         PAUSE_FILE.unlink(missing_ok=True)
@@ -327,7 +325,7 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _in_thread(update):
+    if not _from_group(update):
         return
     if is_paused():
         state = json.loads(PAUSE_FILE.read_text())
@@ -337,7 +335,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_sum(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _in_thread(update):
+    if not _from_group(update):
         return
     summary = " ".join(context.args or [])
     if not summary:
@@ -350,7 +348,7 @@ async def cmd_sum(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_goals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _in_thread(update):
+    if not _from_group(update):
         return
     goals = " ".join(context.args or [])
     if not goals:
@@ -363,7 +361,7 @@ async def cmd_goals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _in_thread(update):
+    if not _from_group(update):
         return
     await send(context.bot, (
         "Accountability Bot\n\n"
