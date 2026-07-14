@@ -1,9 +1,12 @@
 import asyncio
 import functools
+import json
 import logging
 import os
 import subprocess
 import traceback
+from datetime import datetime, timedelta
+from pathlib import Path
 
 from telegram import BotCommand, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -18,6 +21,27 @@ _app: Application | None = None
 # Optional channel mode: if set, Franklin listens/sends to this channel topic
 FRANKLIN_CHANNEL_ID = int(os.environ.get("FRANKLIN_CHANNEL_ID", "0") or "0")
 FRANKLIN_THREAD_ID  = int(os.environ.get("FRANKLIN_THREAD_ID",  "0") or "0")
+
+WINDOW_END = 23  # matches pinger/accountability's default day-end for "pause rest of day"
+PAUSE_FILE = Path(__file__).parent / "franklin_pause_state.json"
+
+
+def is_paused() -> bool:
+    if not PAUSE_FILE.exists():
+        return False
+    state = json.loads(PAUSE_FILE.read_text())
+    resume_at = state.get("resume_at")
+    if resume_at and datetime.fromisoformat(resume_at) <= datetime.now():
+        PAUSE_FILE.unlink(missing_ok=True)
+        return False
+    return True
+
+
+def _write_pause(resume_at: datetime) -> None:
+    PAUSE_FILE.write_text(json.dumps({
+        "paused_at": datetime.now().isoformat(),
+        "resume_at": resume_at.isoformat(),
+    }, indent=2))
 
 
 def _is_authorized(update: Update) -> bool:
@@ -183,6 +207,9 @@ _HELP_TEXT = (
     "/coach — reflection from Claude\n"
     "/summary — weekly recap\n"
     "/web — open the evening review form\n"
+    "/pause [hours] — pause morning/nudge prompts\n"
+    "/resume — end a pause early\n"
+    "/status — show pause state\n"
     "/help — show this message"
 )
 
@@ -301,6 +328,47 @@ async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @_gate
+async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now()
+    if context.args:
+        try:
+            hours = float(context.args[0])
+            resume_at = now + timedelta(hours=hours)
+            _write_pause(resume_at)
+            await update.message.reply_text(
+                f"Paused for {hours:.4g}h (until {resume_at.strftime('%H:%M')}). /resume to end early."
+            )
+        except ValueError:
+            await update.message.reply_text("Usage: /pause [hours] — e.g. /pause 2")
+    else:
+        resume_at = now.replace(hour=WINDOW_END, minute=0, second=0, microsecond=0)
+        if now >= resume_at:
+            resume_at += timedelta(days=1)
+        _write_pause(resume_at)
+        await update.message.reply_text(f"Paused for the rest of the day (until {WINDOW_END}:00).")
+
+
+@_gate
+async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if is_paused():
+        PAUSE_FILE.unlink(missing_ok=True)
+        await update.message.reply_text("Resumed! Prompts will continue.")
+    else:
+        await update.message.reply_text("Not currently paused.")
+
+
+@_gate
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if is_paused():
+        state = json.loads(PAUSE_FILE.read_text())
+        await update.message.reply_text(
+            f"Paused since {state['paused_at'][:16]}\nResumes at: {state.get('resume_at', '?')[:16]}"
+        )
+    else:
+        await update.message.reply_text("Running normally.")
+
+
+@_gate
 async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE):
     import web
     web.start_server()
@@ -383,13 +451,16 @@ async def _post_init(app: Application) -> None:
         BotCommand("coach",    "Reflection from Claude"),
         BotCommand("summary",  "Weekly recap"),
         BotCommand("web",      "Open the evening review form"),
+        BotCommand("pause",    "Pause morning/nudge prompts"),
+        BotCommand("resume",   "End a pause early"),
+        BotCommand("status",   "Show pause state"),
         BotCommand("help",     "Show all commands"),
     ])
 
 
 def build_application() -> Application:
     global _app
-    token = os.environ["franklin_3149987_bot"]
+    token = os.environ["PING_BOT_ID"]
     _app = Application.builder().token(token).post_init(_post_init).build()
 
     _app.add_handler(CommandHandler("start",   cmd_start))
@@ -404,6 +475,9 @@ def build_application() -> Application:
     _app.add_handler(CommandHandler("coach",   cmd_coach))
     _app.add_handler(CommandHandler("summary", cmd_summary))
     _app.add_handler(CommandHandler("web",     cmd_web))
+    _app.add_handler(CommandHandler("pause",   cmd_pause))
+    _app.add_handler(CommandHandler("resume",  cmd_resume))
+    _app.add_handler(CommandHandler("status",  cmd_status))
 
     if os.environ.get("DEBUG_JOBS"):
         _app.add_handler(CommandHandler("debug_fire", cmd_debug_fire))

@@ -17,7 +17,9 @@ _TZ = pytz.timezone("America/Los_Angeles")
 # ---------------------------------------------------------------------------
 
 async def job_morning():
-    from bot import build_morning_message, send_message
+    from bot import build_morning_message, send_message, is_paused
+    if is_paused():
+        return
     try:
         msg = build_morning_message()
         await send_message(msg)
@@ -26,7 +28,9 @@ async def job_morning():
 
 
 async def job_nudge():
-    from bot import build_nudge_message, send_message
+    from bot import build_nudge_message, send_message, is_paused
+    if is_paused():
+        return
     try:
         msg = build_nudge_message()
         await send_message(msg)

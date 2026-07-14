@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import random
 import time
 from datetime import datetime, timedelta
@@ -57,6 +58,7 @@ QUESTIONS = [
 
 _BASE_URL = ""
 _offset   = 0
+_queue: "queue.Queue | None" = None
 
 
 # ── Time helpers ──────────────────────────────────────────────────────────────
@@ -125,7 +127,25 @@ def send(text: str) -> None:
 
 
 def _get_updates(timeout: int = 30) -> list:
+    """When _queue is set (running under bot.py), pull from the shared
+    poller's queue instead of polling getUpdates directly — avoids a second
+    long-poller on the same bot token. Otherwise poll directly (standalone
+    `python accountability_bot.py` runs)."""
     global _offset
+
+    if _queue is not None:
+        updates = []
+        try:
+            updates.append(_queue.get(timeout=timeout))
+        except queue.Empty:
+            return []
+        while True:
+            try:
+                updates.append(_queue.get_nowait())
+            except queue.Empty:
+                break
+        return updates
+
     try:
         resp = _requests.get(
             f"{_BASE_URL}/getUpdates",
@@ -143,6 +163,13 @@ def _get_updates(timeout: int = 30) -> list:
 
 
 def _drain() -> None:
+    if _queue is not None:
+        while True:
+            try:
+                _queue.get_nowait()
+            except queue.Empty:
+                break
+        return
     while True:
         updates = _get_updates(timeout=0)
         if not updates:
@@ -160,6 +187,8 @@ def _poll(timeout: float) -> list[str]:
         if not msg:
             continue
         if msg.get("chat", {}).get("id") != CHANNEL_ID:
+            continue
+        if THREAD_ID and msg.get("message_thread_id") != THREAD_ID:
             continue
         text = msg.get("text", "").strip()
         if not text:
@@ -394,6 +423,26 @@ def main_loop() -> None:
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
+
+def run(update_queue: "queue.Queue | None" = None) -> None:
+    """Entry point for bot.py: run forever in this thread, pulling updates
+    from the shared poller's queue instead of polling getUpdates directly
+    (avoids a second long-poller on the same bot token)."""
+    global _BASE_URL, _queue
+
+    if not TOKEN:
+        raise ValueError("PING_BOT_ID not set in .env")
+    if not CHANNEL_ID:
+        raise ValueError("PINGER_CHANNEL_ID not set in .env")
+    if not THREAD_ID:
+        raise ValueError("ACCOUNTABILITY_THREAD_ID not set in .env")
+
+    _BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
+    _queue    = update_queue
+
+    print(f"Accountability bot started. Window: {WINDOW_START}:00–{WINDOW_END}:00 PT → thread {THREAD_ID}")
+    main_loop()
+
 
 def main() -> None:
     global _BASE_URL

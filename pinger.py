@@ -75,6 +75,7 @@ PINGER_THREAD_ID  = int(os.getenv("PINGER_THREAD_ID",  "0") or "0")  # e.g. 4
 PINGS_FILE     = Path(__file__).parent / "pings.json"
 REMINDERS_FILE = Path(__file__).parent / "reminders.json"
 STATE_FILE     = Path(__file__).parent / "pinger_state.json"
+PAUSE_FILE     = Path(__file__).parent / "pinger_pause_state.json"
 
 WINDOW_START = 7    # random pings only fire between 7am …
 WINDOW_END   = 23   # … and 11pm
@@ -83,6 +84,77 @@ MAX_WAIT_MIN = 180
 
 RANDOM_Q  = "What are you doing?"
 YES_WORDS = {"yes", "y", "yeah", "yep", "yup"}
+
+_HELP_TEXT = (
+    "Pinger — random accountability pings + reminders\n\n"
+    "/pause [hours] — pause random pings (reminders still fire)\n"
+    "/resume — end a pause early\n"
+    "/status — show pause state\n"
+    "/help — show this message"
+)
+
+
+# ── Pause helpers ─────────────────────────────────────────────────────────────
+
+def is_paused() -> bool:
+    if not PAUSE_FILE.exists():
+        return False
+    state = json.loads(PAUSE_FILE.read_text())
+    resume_at = state.get("resume_at")
+    if resume_at and datetime.fromisoformat(resume_at) <= datetime.now():
+        PAUSE_FILE.unlink(missing_ok=True)
+        return False
+    return True
+
+
+def _write_pause(resume_at: datetime) -> None:
+    PAUSE_FILE.write_text(json.dumps({
+        "paused_at": datetime.now().isoformat(),
+        "resume_at": resume_at.isoformat(),
+    }, indent=2))
+
+
+def _handle_command(raw: str) -> None:
+    parts = raw.split()
+    cmd   = parts[0].lstrip("/").split("@")[0].lower()
+    args  = parts[1:]
+
+    if cmd == "pause":
+        now = datetime.now()
+        if args:
+            try:
+                hours     = float(args[0])
+                resume_at = now + timedelta(hours=hours)
+                _write_pause(resume_at)
+                send_message(
+                    f"Paused random pings for {hours:.4g}h (until {resume_at.strftime('%H:%M')}). "
+                    "Reminders still fire. /resume to end early."
+                )
+            except ValueError:
+                send_message("Usage: /pause [hours] — e.g. /pause 2")
+        else:
+            resume_at = now.replace(hour=WINDOW_END, minute=0, second=0, microsecond=0)
+            if now >= resume_at:
+                resume_at += timedelta(days=1)
+            _write_pause(resume_at)
+            send_message(f"Paused random pings for the rest of the day (until {WINDOW_END}:00). Reminders still fire.")
+
+    elif cmd == "resume":
+        if is_paused():
+            PAUSE_FILE.unlink(missing_ok=True)
+            send_message("Resumed! Random pings will continue.")
+        else:
+            send_message("Not currently paused.")
+
+    elif cmd == "status":
+        if is_paused():
+            state = json.loads(PAUSE_FILE.read_text())
+            send_message(f"Paused since {state['paused_at'][:16]}\nResumes at: {state.get('resume_at','?')[:16]}")
+        else:
+            send_message("Running normally.")
+
+    elif cmd == "help":
+        send_message(_HELP_TEXT)
 
 
 # ── Backend abstraction ───────────────────────────────────────────────────────
@@ -257,14 +329,31 @@ def _tg_set_owner_chat_id(chat_id: int) -> None:
 
 
 class TelegramBackend(Backend):
-    def __init__(self):
+    def __init__(self, update_queue: "queue.Queue | None" = None):
+        """update_queue: when running under bot.py, a shared poller thread
+        owns the single getUpdates loop for the whole bot token and fans
+        pinger's topic's updates into this queue. When None (standalone
+        `python pinger.py` run), falls back to polling getUpdates directly."""
         import requests as _req
         self._req    = _req
         token        = PING_BOT_ID or TELEGRAM_TOKEN
         self._base   = f"https://api.telegram.org/bot{token}"
         self._offset = 0
+        self._queue  = update_queue
 
     def _get_updates(self, timeout: int = 30) -> list:
+        if self._queue is not None:
+            updates = []
+            try:
+                updates.append(self._queue.get(timeout=timeout))
+            except queue.Empty:
+                return []
+            while True:
+                try:
+                    updates.append(self._queue.get_nowait())
+                except queue.Empty:
+                    break
+            return updates
         return self._req.get(
             f"{self._base}/getUpdates",
             params={"timeout": timeout, "offset": self._offset, "limit": 20},
@@ -310,6 +399,13 @@ class TelegramBackend(Backend):
             pass
 
     def drain(self) -> None:
+        if self._queue is not None:
+            while True:
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    break
+            return
         while True:
             updates = self._get_updates(timeout=0)
             if not updates:
@@ -367,6 +463,9 @@ class TelegramBackend(Backend):
                 continue
             text = msg.get("text", "").strip()
             if not text:
+                continue
+            if text.startswith("/"):
+                _handle_command(text)
                 continue
             reply_to = msg.get("reply_to_message", {}).get("message_id")
             msgs.append({"text": text, "reply_to": reply_to})
@@ -679,53 +778,25 @@ def one_ping() -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main() -> None:
-    global _backend
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--backend", choices=["signal", "telegram"], default="telegram",
-        help="Messaging backend (default: signal)",
-    )
-    parser.add_argument("--now", action="store_true", help="Fire one ping immediately and exit")
-    args = parser.parse_args()
-
-    if args.backend == "signal":
-        if not SIGNAL_NUMBER:
-            raise ValueError("SIGNAL_NUMBER not set in .env")
-        if not SIGNAL_GROUP:
-            raise ValueError("SIGNAL_GROUP not set in .env")
-        _backend = SignalBackend()
-        print(f"Backend: Signal  |  socket: {SIGNAL_SOCKET}")
-    else:
-        if not (PING_BOT_ID or TELEGRAM_TOKEN):
-            raise ValueError("PING_BOT_ID or TELEGRAM_TOKEN not set in .env")
-        _backend = TelegramBackend()
-        token_src = "PING_BOT_ID" if PING_BOT_ID else "TELEGRAM_TOKEN"
-        owner = _tg_get_owner_chat_id()
-        print(f"Backend: Telegram  |  token: {token_src}  |  owner: {owner or '(waiting for first DM)'}")
-
-    print(f"Random ping window: {WINDOW_START}:00–{WINDOW_END}:00")
-
-    # Resume any pending ping interrupted by a restart
+def _resume_pending_ping(now_flag: bool = False) -> bool:
+    """Resume any ping interrupted by a restart. Returns True if --now should
+    exit early (a resume already occurred and --now was requested)."""
     state = load_json(STATE_FILE, {})
-    if state.get("pending_code"):
-        code        = state["pending_code"]
-        sent_at_iso = state["sent_at_iso"]
-        sent_id     = state.get("sent_id", 0)
-        print(f"Resuming pending ping [{code}] from {sent_at_iso}")
-        entry = poll_for_reply(code, sent_at_iso, sent_id)
-        data  = load_data()
-        data["pings"].append(entry)
-        save_data(data)
-        STATE_FILE.unlink(missing_ok=True)
-        if args.now:
-            return
+    if not state.get("pending_code"):
+        return False
+    code        = state["pending_code"]
+    sent_at_iso = state["sent_at_iso"]
+    sent_id     = state.get("sent_id", 0)
+    print(f"Resuming pending ping [{code}] from {sent_at_iso}")
+    entry = poll_for_reply(code, sent_at_iso, sent_id)
+    data  = load_data()
+    data["pings"].append(entry)
+    save_data(data)
+    STATE_FILE.unlink(missing_ok=True)
+    return now_flag
 
-    if args.now:
-        one_ping()
-        return
 
+def _run_forever() -> None:
     while True:
         now       = datetime.now()
         data      = load_data()
@@ -754,8 +825,65 @@ def main() -> None:
         print(f"[{now_iso()}] Next ping at {wake_at.strftime('%H:%M')} ({wait_sec/60:.1f} min)")
         result = smart_wait(wait_sec, reminders)
 
-        if result == "done" and WINDOW_START <= datetime.now().hour < WINDOW_END:
+        if result == "done" and WINDOW_START <= datetime.now().hour < WINDOW_END and not is_paused():
             one_ping()
+
+
+def run(update_queue: "queue.Queue | None" = None) -> None:
+    """Entry point for bot.py: run the Telegram backend forever in this
+    thread, pulling updates from the shared poller's queue instead of
+    polling getUpdates directly (avoids a second long-poller on the same
+    bot token)."""
+    global _backend
+
+    if not (PING_BOT_ID or TELEGRAM_TOKEN):
+        raise ValueError("PING_BOT_ID or TELEGRAM_TOKEN not set in .env")
+    _backend = TelegramBackend(update_queue)
+    token_src = "PING_BOT_ID" if PING_BOT_ID else "TELEGRAM_TOKEN"
+    owner = _tg_get_owner_chat_id()
+    print(f"Backend: Telegram  |  token: {token_src}  |  owner: {owner or '(waiting for first DM)'}")
+    print(f"Random ping window: {WINDOW_START}:00–{WINDOW_END}:00")
+
+    _resume_pending_ping()
+    _run_forever()
+
+
+def main() -> None:
+    global _backend
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--backend", choices=["signal", "telegram"], default="telegram",
+        help="Messaging backend (default: signal)",
+    )
+    parser.add_argument("--now", action="store_true", help="Fire one ping immediately and exit")
+    args = parser.parse_args()
+
+    if args.backend == "signal":
+        if not SIGNAL_NUMBER:
+            raise ValueError("SIGNAL_NUMBER not set in .env")
+        if not SIGNAL_GROUP:
+            raise ValueError("SIGNAL_GROUP not set in .env")
+        _backend = SignalBackend()
+        print(f"Backend: Signal  |  socket: {SIGNAL_SOCKET}")
+    else:
+        if not (PING_BOT_ID or TELEGRAM_TOKEN):
+            raise ValueError("PING_BOT_ID or TELEGRAM_TOKEN not set in .env")
+        _backend = TelegramBackend()
+        token_src = "PING_BOT_ID" if PING_BOT_ID else "TELEGRAM_TOKEN"
+        owner = _tg_get_owner_chat_id()
+        print(f"Backend: Telegram  |  token: {token_src}  |  owner: {owner or '(waiting for first DM)'}")
+
+    print(f"Random ping window: {WINDOW_START}:00–{WINDOW_END}:00")
+
+    if _resume_pending_ping(now_flag=args.now):
+        return
+
+    if args.now:
+        one_ping()
+        return
+
+    _run_forever()
 
 
 if __name__ == "__main__":
