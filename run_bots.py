@@ -90,13 +90,24 @@ def main() -> None:
     acct_q     = queue.Queue()
     franklin_q = queue.Queue()
 
-    queues = {}
-    if PINGER_THREAD_ID:
-        queues[PINGER_THREAD_ID] = pinger_q
-    if ACCOUNTABILITY_THREAD_ID:
-        queues[ACCOUNTABILITY_THREAD_ID] = acct_q
-    if FRANKLIN_THREAD_ID:
-        queues[FRANKLIN_THREAD_ID] = franklin_q
+    assignments = [
+        ("PINGER_THREAD_ID", PINGER_THREAD_ID, pinger_q),
+        ("ACCOUNTABILITY_THREAD_ID", ACCOUNTABILITY_THREAD_ID, acct_q),
+        ("FRANKLIN_THREAD_ID", FRANKLIN_THREAD_ID, franklin_q),
+    ]
+    queues: dict = {}
+    owners: dict = {}  # thread_id -> env var name that claimed it, to detect collisions
+    for env_name, thread_id, q in assignments:
+        if not thread_id:
+            continue
+        if thread_id in owners:
+            raise ValueError(
+                f"Thread ID collision: {env_name}={thread_id} is already claimed by "
+                f"{owners[thread_id]}. Two bots can't share a topic — fix the .env "
+                f"(check for a stale/copy-pasted value)."
+            )
+        owners[thread_id] = env_name
+        queues[thread_id] = q
 
     print(f"Routing topics: pinger={PINGER_THREAD_ID}  accountability={ACCOUNTABILITY_THREAD_ID}  franklin={FRANKLIN_THREAD_ID}")
 
