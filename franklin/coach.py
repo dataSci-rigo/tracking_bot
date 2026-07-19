@@ -86,6 +86,46 @@ def reflect_on_virtue(virtue_id: str, weekly_recap: bool = False) -> str:
         raise CoachError(str(e)) from e
 
 
+def generate_daily_advice(virtue_id: str, count: int = 5) -> list[str]:
+    import advice_store
+
+    config = store.load_config()
+    virtue = next((v for v in config["virtues"] if v["id"] == virtue_id), None)
+    if virtue is None:
+        raise CoachError(f"Unknown virtue: {virtue_id}")
+
+    examples = advice_store.read_examples_md()
+
+    system = (
+        "You write short, punchy affirmations and pieces of practical advice for someone "
+        "practicing Benjamin Franklin's 13-virtue method, focused on a single virtue this week. "
+        f"Write exactly {count} distinct items, one per line, no numbering, no bullets, no "
+        "surrounding quotes. Each item is 1-2 short sentences, direct and encouraging — mix "
+        "affirmations (\"you are...\", \"you can...\") with concrete advice (\"try...\", "
+        "\"when X happens, do Y\"). Use the past examples and user notes below to calibrate tone "
+        "and avoid repeating past mistakes, but do not repeat any past item verbatim."
+    )
+    user_message = (
+        f"Virtue: {virtue['name']}\nPrecept: {virtue['precept']}\n\n"
+        f"Past feedback:\n{examples}\n\n"
+        f"Write {count} new affirmations/advice items for this virtue."
+    )
+
+    try:
+        response = _client.messages.create(
+            model=config.get("coach_model", "claude-sonnet-4-6"),
+            max_tokens=512,
+            system=system,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        text = response.content[0].text
+    except Exception as e:
+        raise CoachError(str(e)) from e
+
+    items = [line.strip("-•* ").strip() for line in text.splitlines() if line.strip()]
+    return items[:count]
+
+
 def refresh_inspiration(virtue_id: str) -> str | None:
     config = store.load_config()
     virtue = next((v for v in config["virtues"] if v["id"] == virtue_id), None)

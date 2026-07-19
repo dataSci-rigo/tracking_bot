@@ -9,7 +9,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from telegram import BotCommand, Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application, CommandHandler, ContextTypes, MessageHandler, MessageReactionHandler, filters,
+)
 
 import store
 import inspiration as insp
@@ -421,22 +423,68 @@ def _get_tailscale_host() -> str | None:
     return None
 
 
-async def send_message(text: str) -> None:
+async def send_message(text: str) -> "int | None":
+    """Returns the sent message's message_id (or None if not sent), so
+    callers — e.g. job_nudge — can record which physical message an
+    advice/affirmation item became, for later reaction/reply tracking."""
     global _app
     if _app is None:
         logger.error("send_message called before app initialized")
-        return
+        return None
     if FRANKLIN_CHANNEL_ID:
         kwargs = {"chat_id": FRANKLIN_CHANNEL_ID, "text": text, "parse_mode": "Markdown"}
         if FRANKLIN_THREAD_ID:
             kwargs["message_thread_id"] = FRANKLIN_THREAD_ID
-        await _app.bot.send_message(**kwargs)
-        return
+        msg = await _app.bot.send_message(**kwargs)
+        return msg.message_id
     chat_id = store.get_owner_chat_id()
     if chat_id is None:
         logger.warning("send_to_owner: no owner registered yet")
+        return None
+    msg = await _app.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+    return msg.message_id
+
+
+# ---------------------------------------------------------------------------
+# Advice feedback: 👍/👎 reactions and reply notes on advice/affirmation messages
+# ---------------------------------------------------------------------------
+
+async def on_advice_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reaction = update.message_reaction
+    if reaction is None:
         return
-    await _app.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+    if FRANKLIN_CHANNEL_ID and reaction.chat.id != FRANKLIN_CHANNEL_ID:
+        return
+
+    import advice_store
+    found = advice_store.find_by_message_id(reaction.message_id)
+    if found is None:
+        return
+    _, item = found
+
+    old_emojis = {r.emoji for r in reaction.old_reaction if getattr(r, "emoji", None)}
+    new_emojis = {r.emoji for r in reaction.new_reaction if getattr(r, "emoji", None)}
+    added = new_emojis - old_emojis
+
+    if "👍" in added:
+        advice_store.append_good_example(item["virtue_name"], item["text"])
+    elif "👎" in added:
+        advice_store.append_bad_example(item["virtue_name"], item["text"])
+
+
+async def on_advice_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    msg = update.effective_message
+    if not msg or not msg.reply_to_message or not msg.text:
+        return
+
+    import advice_store
+    found = advice_store.find_by_message_id(msg.reply_to_message.message_id)
+    if found is None:
+        return
+    _, item = found
+    advice_store.append_note(msg.text.strip(), item["text"])
 
 
 async def _post_init(app: Application) -> None:
@@ -478,6 +526,9 @@ def build_application() -> Application:
     _app.add_handler(CommandHandler("pause",   cmd_pause))
     _app.add_handler(CommandHandler("resume",  cmd_resume))
     _app.add_handler(CommandHandler("status",  cmd_status))
+
+    _app.add_handler(MessageReactionHandler(on_advice_reaction))
+    _app.add_handler(MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, on_advice_reply))
 
     if os.environ.get("DEBUG_JOBS"):
         _app.add_handler(CommandHandler("debug_fire", cmd_debug_fire))

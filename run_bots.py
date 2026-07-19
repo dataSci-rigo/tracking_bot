@@ -18,6 +18,7 @@ Run:   python run_bots.py
 Stop:  Ctrl-C
 """
 import asyncio
+import json
 import os
 import queue
 import sys
@@ -46,13 +47,22 @@ def _thread_id_of(update: dict) -> "int | None":
     return msg.get("message_thread_id") if msg else None
 
 
-def _poller(queues: dict) -> None:
+_ALLOWED_UPDATES = [
+    "message", "edited_message", "callback_query", "my_chat_member",
+    "message_reaction",  # needed for Franklin's advice 👍/👎 tracking; excluded by default
+]
+
+
+def _poller(queues: dict, reaction_queue: "queue.Queue") -> None:
     offset = 0
     while True:
         try:
             resp = requests.get(
                 f"{BASE_URL}/getUpdates",
-                params={"timeout": 30, "offset": offset, "limit": 100},
+                params={
+                    "timeout": 30, "offset": offset, "limit": 100,
+                    "allowed_updates": json.dumps(_ALLOWED_UPDATES),
+                },
                 timeout=40,
             )
             data = resp.json()
@@ -68,6 +78,14 @@ def _poller(queues: dict) -> None:
 
         for upd in data.get("result", []):
             offset = upd["update_id"] + 1
+
+            if "message_reaction" in upd:
+                # Reaction updates carry no message_thread_id, so they can't be
+                # routed by topic like everything else. Only Franklin currently
+                # tracks reactions, so route them straight there.
+                reaction_queue.put(upd)
+                continue
+
             thread_id = _thread_id_of(upd)
             target = queues.get(thread_id)
             if target is not None:
@@ -111,7 +129,7 @@ def main() -> None:
 
     print(f"Routing topics: pinger={PINGER_THREAD_ID}  accountability={ACCOUNTABILITY_THREAD_ID}  franklin={FRANKLIN_THREAD_ID}")
 
-    threading.Thread(target=_poller, args=(queues,), daemon=True, name="poller").start()
+    threading.Thread(target=_poller, args=(queues, franklin_q), daemon=True, name="poller").start()
 
     import pinger
     import accountability_bot

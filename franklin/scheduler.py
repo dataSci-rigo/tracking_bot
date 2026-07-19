@@ -29,13 +29,36 @@ async def job_morning():
 
 async def job_nudge():
     from bot import build_nudge_message, send_message, is_paused
+    import advice_store
     if is_paused():
         return
     try:
-        msg = build_nudge_message()
-        await send_message(msg)
+        today = date.today().isoformat()
+        item = advice_store.take_next_unsent(today)
+        msg = item["text"] if item is not None else build_nudge_message()
+        message_id = await send_message(msg)
+        if item is not None and message_id is not None:
+            advice_store.mark_sent(today, item["idx"], message_id)
     except Exception:
         logger.exception("Nudge job failed")
+
+
+async def job_generate_advice():
+    from bot import is_paused
+    import advice_store
+    import coach as coach_mod
+    if is_paused():
+        return
+    try:
+        virtue = store.current_focus_virtue()
+        today = date.today().isoformat()
+        items = await asyncio.get_event_loop().run_in_executor(
+            None, coach_mod.generate_daily_advice, virtue["id"]
+        )
+        advice_store.save_daily_advice(today, virtue["id"], virtue["name"], items)
+        logger.info("Generated %d advice item(s) for %s", len(items), virtue["name"])
+    except Exception:
+        logger.exception("Advice generation job failed")
 
 
 async def job_evening():
@@ -96,6 +119,7 @@ JOB_FUNCTIONS = {
     "evening": job_evening,
     "monday": job_monday_rotation,
     "sunday": job_sunday_summary,
+    "generate_advice": job_generate_advice,
 }
 
 
@@ -114,6 +138,13 @@ def build_scheduler() -> AsyncIOScheduler:
         job_morning, "cron",
         hour=int(morning_time[0]), minute=int(morning_time[1]),
         id="morning",
+    )
+
+    advice_gen_time = schedule.get("generate_advice", "06:30").split(":")
+    scheduler.add_job(
+        job_generate_advice, "cron",
+        hour=int(advice_gen_time[0]), minute=int(advice_gen_time[1]),
+        id="generate_advice",
     )
 
     for i, nudge_time in enumerate(schedule.get("nudges", [])):
