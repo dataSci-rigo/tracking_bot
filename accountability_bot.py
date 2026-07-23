@@ -6,12 +6,13 @@ Synchronous requests-based (mirrors pinger.py architecture).
 Schedule (all times America/Los_Angeles):
   07:00        "What's your plan for today?" (waits up to 30 min)
   07:00–23:00  random check-ins every 1–2.5 hr — Q1/Q2 sent as plain messages,
-               Q3 ("Are you working hard?") sent as a 0-5 Telegram poll, with
-               a 0-5 "Are you on task?" follow-up poll once Q3 is answered.
-               Replies are only accepted as *direct replies* (reply_to) to
-               the sent question/poll, open for 24h; asked once, never
-               re-prompted. A late reply attempt after 24h gets "Check-in
-               timed out."
+               Q3 ("Are you working hard?") sent as a message with inline
+               0-5 buttons, with a 0-5 "Are you on task?" follow-up (also
+               inline buttons) once Q3 is answered. Replies are only
+               accepted as *direct replies* (reply_to) to the sent
+               message (Q1/Q2) or a *tap of its own buttons* (Q3/Q3b), open
+               for 24h; asked once, never re-prompted. A late reply/tap
+               after 24h gets "Check-in timed out."
   23:00        "How much did you get done today?" (waits up to 30 min),
                followed by a 3-day rolling stats summary (reply rate, effort
                rate, on-task rate)
@@ -58,7 +59,7 @@ MIN_GAP_MIN   = 60
 MAX_GAP_MIN   = 150
 
 REPLY_WINDOW_HOURS = 24   # a question's reply stays valid this long, asked only once
-POLL_OPTIONS       = ["0", "1", "2", "3", "4", "5"]
+SCALE_OPTIONS      = ["0", "1", "2", "3", "4", "5"]
 
 _BASE_URL = ""
 _offset   = 0
@@ -165,7 +166,7 @@ def _send_text_question(label: str, prompt: str) -> "dict | None":
         msg = result["result"]
         return {
             "label": label, "prompt": prompt, "kind": "text",
-            "message_id": msg["message_id"], "poll_id": None,
+            "message_id": msg["message_id"],
             "sent_at": now_pt().isoformat(),
         }
     except Exception as e:
@@ -173,32 +174,42 @@ def _send_text_question(label: str, prompt: str) -> "dict | None":
         return None
 
 
-def _send_poll_question(label: str, prompt: str) -> "dict | None":
-    """Send a 0-5 non-anonymous poll question. Non-anonymous is required —
-    Telegram only delivers poll_answer updates (who voted what) for
-    non-anonymous polls."""
+def _send_scale_question(label: str, prompt: str) -> "dict | None":
+    """Send a question with inline 0-5 buttons (not a native Telegram poll)."""
     payload: dict = {
         "chat_id": CHANNEL_ID,
-        "question": prompt,
-        "options": [{"text": o} for o in POLL_OPTIONS],
-        "is_anonymous": False,
+        "text": prompt,
+        "reply_markup": {
+            "inline_keyboard": [[{"text": o, "callback_data": f"scale:{o}"} for o in SCALE_OPTIONS]],
+        },
     }
     if THREAD_ID:
         payload["message_thread_id"] = THREAD_ID
     try:
-        result = _requests.post(f"{_BASE_URL}/sendPoll", json=payload, timeout=10).json()
+        result = _requests.post(f"{_BASE_URL}/sendMessage", json=payload, timeout=10).json()
         if not result.get("ok"):
-            print(f"  send poll error: {result}")
+            print(f"  send scale question error: {result}")
             return None
         msg = result["result"]
         return {
-            "label": label, "prompt": prompt, "kind": "poll",
-            "message_id": msg["message_id"], "poll_id": msg["poll"]["id"],
+            "label": label, "prompt": prompt, "kind": "buttons",
+            "message_id": msg["message_id"],
             "sent_at": now_pt().isoformat(),
         }
     except Exception as e:
-        print(f"  send poll error: {e}")
+        print(f"  send scale question error: {e}")
         return None
+
+
+def _answer_callback(callback_query_id: str) -> None:
+    try:
+        _requests.post(
+            f"{_BASE_URL}/answerCallbackQuery",
+            json={"callback_query_id": callback_query_id},
+            timeout=5,
+        )
+    except Exception:
+        pass
 
 
 def _get_updates(timeout: int = 30) -> list:
@@ -300,28 +311,38 @@ def _handle_text_reply(msg: dict) -> bool:
     return True
 
 
-def _handle_poll_answer(poll_answer: dict) -> None:
-    """Match an incoming poll_answer to a pending poll question (Q3 or its
-    Q3b follow-up), resolve it, and — if it was Q3 — fire the follow-up poll."""
-    poll_id     = poll_answer.get("poll_id")
-    option_ids  = poll_answer.get("option_ids", [])
+def _handle_callback_query(cq: dict) -> None:
+    """Match an incoming inline-button tap to a pending buttons question (Q3
+    or its Q3b follow-up), resolve it, and — if it was Q3 — send the Q3b
+    follow-up. Always answers the callback so Telegram clears the button's
+    loading spinner."""
+    _answer_callback(cq["id"])
+
+    cq_msg = cq.get("message") or {}
+    if cq_msg.get("chat", {}).get("id") != CHANNEL_ID:
+        return
+    if THREAD_ID and cq_msg.get("message_thread_id") != THREAD_ID:
+        return
+
+    data = cq.get("data", "")
+    if not data.startswith("scale:"):
+        return
+    value = data.split(":", 1)[1]
+
+    message_id  = cq_msg.get("message_id")
     pending     = load_pending()
-    match       = next((q for q in pending if q["kind"] == "poll" and q["poll_id"] == poll_id), None)
+    match       = next((q for q in pending if q["kind"] == "buttons" and q["message_id"] == message_id), None)
     if match is None:
         return
 
-    remaining   = [q for q in pending if not (q["kind"] == "poll" and q["poll_id"] == poll_id)]
+    remaining   = [q for q in pending if not (q["kind"] == "buttons" and q["message_id"] == message_id)]
     received_at = now_pt()
     sent_at     = datetime.fromisoformat(match["sent_at"])
     timed_out   = received_at - sent_at > timedelta(hours=REPLY_WINDOW_HOURS)
-    value       = POLL_OPTIONS[option_ids[0]] if option_ids else None
 
     if timed_out:
         send("Check-in timed out.")
         _log_checkin_event({**match, "answered_at": None, "expired": True, "value": None})
-    elif value is None:
-        save_pending(remaining)
-        return
     else:
         send(
             f"{match['label']}: Sent {sent_at.strftime('%H:%M')} "
@@ -329,7 +350,7 @@ def _handle_poll_answer(poll_answer: dict) -> None:
         )
         _log_checkin_event({**match, "answered_at": received_at.isoformat(), "expired": False, "value": value})
         if match["label"] == "Q3":
-            followup = _send_poll_question("Q3b", "Are you on task?")
+            followup = _send_scale_question("Q3b", "Are you on task?")
             if followup is not None:
                 remaining.append(followup)
 
@@ -338,17 +359,17 @@ def _handle_poll_answer(poll_answer: dict) -> None:
 
 def _poll(timeout: float) -> list[str]:
     """Poll for up to `timeout` seconds. Returns text messages (for morning/
-    evening's plain-text wait); handles commands and check-in replies/poll
-    answers inline."""
+    evening's plain-text wait); handles commands, check-in replies, and
+    check-in button taps inline."""
     if timeout <= 0:
         return []
     _expire_stale_pending()
     updates = _get_updates(timeout=min(30, int(timeout)))
     texts = []
     for upd in updates:
-        poll_answer = upd.get("poll_answer")
-        if poll_answer is not None:
-            _handle_poll_answer(poll_answer)
+        cq = upd.get("callback_query")
+        if cq is not None:
+            _handle_callback_query(cq)
             continue
 
         msg = upd.get("message")
@@ -437,10 +458,10 @@ def _handle_command(raw: str) -> None:
             "/help — show this message\n\n"
             f"Schedule (PT): {WINDOW_START}:00 morning plan · check-ins every "
             f"{MIN_GAP_MIN}–{MAX_GAP_MIN} min · {WINDOW_END}:00 evening review + 3-day stats\n\n"
-            "Check-ins: Q1/Q2 are plain messages, Q3 is a 0-5 poll (\"Are you "
-            "working hard?\") with a 0-5 follow-up poll (\"Are you on task?\") "
-            "once answered. Only direct replies/poll votes count, asked once, "
-            f"open for {REPLY_WINDOW_HOURS}h."
+            "Check-ins: Q1/Q2 are plain messages, Q3 is \"Are you working "
+            "hard?\" with inline 0-5 buttons, followed by 0-5 buttons for "
+            "\"Are you on task?\" once answered. Only direct replies/button "
+            f"taps count, asked once, open for {REPLY_WINDOW_HOURS}h."
         )
 
 
@@ -499,10 +520,10 @@ def evening_session() -> None:
 
 
 def start_checkin() -> None:
-    """Fire Q1/Q2 (plain text) and Q3 (0-5 poll) and return immediately —
-    replies are resolved asynchronously by _poll() as they arrive (or as
-    "Check-in timed out" if a late reply shows up after 24h). Never
-    re-prompted: each question is sent exactly once."""
+    """Fire Q1/Q2 (plain text) and Q3 (0-5 inline buttons) and return
+    immediately — replies are resolved asynchronously by _poll() as they
+    arrive (or as "Check-in timed out" if a late reply/tap shows up after
+    24h). Never re-prompted: each question is sent exactly once."""
     print(f"[{now_str()}] Starting check-in")
     send("Hey! Quick accountability check-in.")
 
@@ -510,7 +531,7 @@ def start_checkin() -> None:
     for q in (
         _send_text_question("Q1", "What are you doing?"),
         _send_text_question("Q2", "What should you be doing?"),
-        _send_poll_question("Q3", "Are you working hard?"),
+        _send_scale_question("Q3", "Are you working hard?"),
     ):
         if q is not None:
             pending.append(q)
