@@ -5,8 +5,16 @@ Synchronous requests-based (mirrors pinger.py architecture).
 
 Schedule (all times America/Los_Angeles):
   07:00        "What's your plan for today?" (waits up to 30 min)
-  07:00–23:00  random 3-question check-ins every 1–2.5 hr
-  23:00        "How much did you get done today?" (waits up to 30 min)
+  07:00–23:00  random check-ins every 1–2.5 hr — Q1/Q2 sent as plain messages,
+               Q3 ("Are you working hard?") sent as a 0-5 Telegram poll, with
+               a 0-5 "Are you on task?" follow-up poll once Q3 is answered.
+               Replies are only accepted as *direct replies* (reply_to) to
+               the sent question/poll, open for 24h; asked once, never
+               re-prompted. A late reply attempt after 24h gets "Check-in
+               timed out."
+  23:00        "How much did you get done today?" (waits up to 30 min),
+               followed by a 3-day rolling stats summary (reply rate, effort
+               rate, on-task rate)
   23:00–07:00  silent
 
 Run:   python accountability_bot.py
@@ -38,8 +46,9 @@ TOKEN      = os.getenv("PING_BOT_ID", "")
 CHANNEL_ID = int(os.getenv("PINGER_CHANNEL_ID", "0") or "0")
 THREAD_ID  = int(os.getenv("ACCOUNTABILITY_THREAD_ID", "0") or "0")
 
-DATA_FILE  = Path(__file__).parent / "accountability_data.json"
-PAUSE_FILE = Path(__file__).parent / "pause_state.json"
+DATA_FILE           = Path(__file__).parent / "accountability_data.json"
+PAUSE_FILE          = Path(__file__).parent / "pause_state.json"
+CHECKIN_PENDING_FILE = Path(__file__).parent / "checkin_pending.json"
 
 PT = ZoneInfo("America/Los_Angeles")
 
@@ -47,14 +56,9 @@ WINDOW_START  = 7    # 7 AM PT
 WINDOW_END    = 23   # 11 PM PT
 MIN_GAP_MIN   = 60
 MAX_GAP_MIN   = 150
-REPLY_TIMEOUT = 600  # 10 min per question
-MAX_RETRIES   = 2
 
-QUESTIONS = [
-    "What are you doing?",
-    "What should you be doing?",
-    "Are you working hard?",
-]
+REPLY_WINDOW_HOURS = 24   # a question's reply stays valid this long, asked only once
+POLL_OPTIONS       = ["0", "1", "2", "3", "4", "5"]
 
 _BASE_URL = ""
 _offset   = 0
@@ -95,6 +99,27 @@ def save_data(data: dict) -> None:
     DATA_FILE.write_text(json.dumps(data, indent=2))
 
 
+# ── Check-in pending/log helpers ───────────────────────────────────────────────
+
+def load_pending() -> list:
+    if not CHECKIN_PENDING_FILE.exists():
+        return []
+    return json.loads(CHECKIN_PENDING_FILE.read_text())
+
+
+def save_pending(items: list) -> None:
+    CHECKIN_PENDING_FILE.write_text(json.dumps(items, indent=2))
+
+
+def _log_checkin_event(event: dict) -> None:
+    """Record a resolved (answered or expired) question into that day's log,
+    keyed off the question's own sent_at date — used by compute_3day_stats()."""
+    day = event["sent_at"][:10]
+    data = load_data()
+    data["days"].setdefault(day, {}).setdefault("checkin_log", []).append(event)
+    save_data(data)
+
+
 # ── Pause helpers ─────────────────────────────────────────────────────────────
 
 def is_paused() -> bool:
@@ -124,6 +149,56 @@ def send(text: str) -> None:
         _requests.post(f"{_BASE_URL}/sendMessage", json=payload, timeout=10)
     except Exception as e:
         print(f"  send error: {e}")
+
+
+def _send_text_question(label: str, prompt: str) -> "dict | None":
+    """Send a plain-text check-in question and return a pending-question
+    record (message_id captured so a later direct reply can be matched)."""
+    payload: dict = {"chat_id": CHANNEL_ID, "text": prompt}
+    if THREAD_ID:
+        payload["message_thread_id"] = THREAD_ID
+    try:
+        result = _requests.post(f"{_BASE_URL}/sendMessage", json=payload, timeout=10).json()
+        if not result.get("ok"):
+            print(f"  send question error: {result}")
+            return None
+        msg = result["result"]
+        return {
+            "label": label, "prompt": prompt, "kind": "text",
+            "message_id": msg["message_id"], "poll_id": None,
+            "sent_at": now_pt().isoformat(),
+        }
+    except Exception as e:
+        print(f"  send question error: {e}")
+        return None
+
+
+def _send_poll_question(label: str, prompt: str) -> "dict | None":
+    """Send a 0-5 non-anonymous poll question. Non-anonymous is required —
+    Telegram only delivers poll_answer updates (who voted what) for
+    non-anonymous polls."""
+    payload: dict = {
+        "chat_id": CHANNEL_ID,
+        "question": prompt,
+        "options": [{"text": o} for o in POLL_OPTIONS],
+        "is_anonymous": False,
+    }
+    if THREAD_ID:
+        payload["message_thread_id"] = THREAD_ID
+    try:
+        result = _requests.post(f"{_BASE_URL}/sendPoll", json=payload, timeout=10).json()
+        if not result.get("ok"):
+            print(f"  send poll error: {result}")
+            return None
+        msg = result["result"]
+        return {
+            "label": label, "prompt": prompt, "kind": "poll",
+            "message_id": msg["message_id"], "poll_id": msg["poll"]["id"],
+            "sent_at": now_pt().isoformat(),
+        }
+    except Exception as e:
+        print(f"  send poll error: {e}")
+        return None
 
 
 def _get_updates(timeout: int = 30) -> list:
@@ -176,13 +251,106 @@ def _drain() -> None:
             break
 
 
+def _expire_stale_pending() -> None:
+    """Resolve any pending question whose 24h reply window has lapsed with
+    no reply attempt at all, so it still counts as unanswered in the daily
+    stats instead of lingering forever."""
+    pending = load_pending()
+    if not pending:
+        return
+    now = now_pt()
+    remaining = []
+    for q in pending:
+        sent_at = datetime.fromisoformat(q["sent_at"])
+        if now - sent_at > timedelta(hours=REPLY_WINDOW_HOURS):
+            _log_checkin_event({**q, "answered_at": None, "expired": True, "value": None})
+        else:
+            remaining.append(q)
+    if len(remaining) != len(pending):
+        save_pending(remaining)
+
+
+def _handle_text_reply(msg: dict) -> bool:
+    """If `msg` is a direct reply to a pending text question (Q1/Q2), resolve
+    it (confirmation or timeout) and return True. Otherwise False."""
+    reply_to = msg.get("reply_to_message", {}).get("message_id")
+    if reply_to is None:
+        return False
+
+    pending = load_pending()
+    match = next((q for q in pending if q["kind"] == "text" and q["message_id"] == reply_to), None)
+    if match is None:
+        return False
+
+    text        = msg.get("text", "").strip()
+    received_at = now_pt()
+    sent_at     = datetime.fromisoformat(match["sent_at"])
+
+    if received_at - sent_at > timedelta(hours=REPLY_WINDOW_HOURS):
+        send("Check-in timed out.")
+        _log_checkin_event({**match, "answered_at": None, "expired": True, "value": None})
+    else:
+        send(
+            f"{match['label']}: Sent {sent_at.strftime('%H:%M')} "
+            f"Received {received_at.strftime('%H:%M')}, Message: {text[:100]}"
+        )
+        _log_checkin_event({**match, "answered_at": received_at.isoformat(), "expired": False, "value": text})
+
+    save_pending([q for q in pending if not (q["kind"] == "text" and q["message_id"] == reply_to)])
+    return True
+
+
+def _handle_poll_answer(poll_answer: dict) -> None:
+    """Match an incoming poll_answer to a pending poll question (Q3 or its
+    Q3b follow-up), resolve it, and — if it was Q3 — fire the follow-up poll."""
+    poll_id     = poll_answer.get("poll_id")
+    option_ids  = poll_answer.get("option_ids", [])
+    pending     = load_pending()
+    match       = next((q for q in pending if q["kind"] == "poll" and q["poll_id"] == poll_id), None)
+    if match is None:
+        return
+
+    remaining   = [q for q in pending if not (q["kind"] == "poll" and q["poll_id"] == poll_id)]
+    received_at = now_pt()
+    sent_at     = datetime.fromisoformat(match["sent_at"])
+    timed_out   = received_at - sent_at > timedelta(hours=REPLY_WINDOW_HOURS)
+    value       = POLL_OPTIONS[option_ids[0]] if option_ids else None
+
+    if timed_out:
+        send("Check-in timed out.")
+        _log_checkin_event({**match, "answered_at": None, "expired": True, "value": None})
+    elif value is None:
+        save_pending(remaining)
+        return
+    else:
+        send(
+            f"{match['label']}: Sent {sent_at.strftime('%H:%M')} "
+            f"Received {received_at.strftime('%H:%M')}, Message: {value}"
+        )
+        _log_checkin_event({**match, "answered_at": received_at.isoformat(), "expired": False, "value": value})
+        if match["label"] == "Q3":
+            followup = _send_poll_question("Q3b", "Are you on task?")
+            if followup is not None:
+                remaining.append(followup)
+
+    save_pending(remaining)
+
+
 def _poll(timeout: float) -> list[str]:
-    """Poll for up to `timeout` seconds. Returns text messages; handles commands inline."""
+    """Poll for up to `timeout` seconds. Returns text messages (for morning/
+    evening's plain-text wait); handles commands and check-in replies/poll
+    answers inline."""
     if timeout <= 0:
         return []
+    _expire_stale_pending()
     updates = _get_updates(timeout=min(30, int(timeout)))
     texts = []
     for upd in updates:
+        poll_answer = upd.get("poll_answer")
+        if poll_answer is not None:
+            _handle_poll_answer(poll_answer)
+            continue
+
         msg = upd.get("message")
         if not msg:
             continue
@@ -195,8 +363,10 @@ def _poll(timeout: float) -> list[str]:
             continue
         if text.startswith("/"):
             _handle_command(text)
-        else:
-            texts.append(text)
+            continue
+        if _handle_text_reply(msg):
+            continue
+        texts.append(text)
     return texts
 
 
@@ -266,7 +436,11 @@ def _handle_command(raw: str) -> None:
             "/goals <text> — save today's goals\n"
             "/help — show this message\n\n"
             f"Schedule (PT): {WINDOW_START}:00 morning plan · check-ins every "
-            f"{MIN_GAP_MIN}–{MAX_GAP_MIN} min · {WINDOW_END}:00 evening review"
+            f"{MIN_GAP_MIN}–{MAX_GAP_MIN} min · {WINDOW_END}:00 evening review + 3-day stats\n\n"
+            "Check-ins: Q1/Q2 are plain messages, Q3 is a 0-5 poll (\"Are you "
+            "working hard?\") with a 0-5 follow-up poll (\"Are you on task?\") "
+            "once answered. Only direct replies/poll votes count, asked once, "
+            f"open for {REPLY_WINDOW_HOURS}h."
         )
 
 
@@ -324,49 +498,65 @@ def evening_session() -> None:
         print("  No review response — moving on")
 
 
-def run_checkin() -> None:
+def start_checkin() -> None:
+    """Fire Q1/Q2 (plain text) and Q3 (0-5 poll) and return immediately —
+    replies are resolved asynchronously by _poll() as they arrive (or as
+    "Check-in timed out" if a late reply shows up after 24h). Never
+    re-prompted: each question is sent exactly once."""
     print(f"[{now_str()}] Starting check-in")
-    send("Hey! Quick accountability check-in — 3 questions.")
-    time.sleep(0.8)
+    send("Hey! Quick accountability check-in.")
 
-    collected: list[tuple[str, str]] = []
+    pending = load_pending()
+    for q in (
+        _send_text_question("Q1", "What are you doing?"),
+        _send_text_question("Q2", "What should you be doing?"),
+        _send_poll_question("Q3", "Are you working hard?"),
+    ):
+        if q is not None:
+            pending.append(q)
+    save_pending(pending)
+    print(f"[{now_str()}] Check-in questions sent; replies open for {REPLY_WINDOW_HOURS}h")
 
-    for idx, question in enumerate(QUESTIONS, 1):
-        answer = None
-        for attempt in range(MAX_RETRIES + 1):
-            if attempt == 0:
-                send(f"{idx}. {question}")
-            else:
-                send(f"Still waiting on Q{idx}: {question}")
-            answer = wait_for_reply(timeout=REPLY_TIMEOUT)
-            if answer:
-                break
 
-        if answer is None:
-            send("No response after 2 attempts. Dropping this check-in — I'll try again later.")
-            data = load_data()
-            data["sessions"].append({
-                "timestamp":           now_pt().isoformat(),
-                "status":              "dropped",
-                "dropped_on_question": idx,
-                "questions": [{"question": q, "answer": None} for q in QUESTIONS],
-            })
-            save_data(data)
-            return
-
-        collected.append((question, answer))
-        if idx < len(QUESTIONS):
-            time.sleep(0.8)
-
-    send("Thanks for checking in! Stay focused.")
-    print(f"[{now_str()}] Check-in complete")
+def compute_3day_stats() -> dict:
+    """Reply/effort/on-task rates averaged over today + the previous 2 days."""
     data = load_data()
-    data["sessions"].append({
-        "timestamp": now_pt().isoformat(),
-        "status":    "completed",
-        "questions": [{"question": q, "answer": a} for q, a in collected],
-    })
-    save_data(data)
+    days = [(now_pt().date() - timedelta(days=i)).isoformat() for i in range(3)]
+
+    total_sent = total_answered = 0
+    effort_scores: list[int] = []
+    ontask_scores: list[int] = []
+
+    for day in days:
+        for event in data["days"].get(day, {}).get("checkin_log", []):
+            total_sent += 1
+            if not event.get("answered_at"):
+                continue
+            total_answered += 1
+            if event["label"] == "Q3" and event.get("value") is not None:
+                effort_scores.append(int(event["value"]))
+            elif event["label"] == "Q3b" and event.get("value") is not None:
+                ontask_scores.append(int(event["value"]))
+
+    return {
+        "reply_rate":  (total_answered / total_sent * 100) if total_sent else None,
+        "effort_rate": (sum(effort_scores) / len(effort_scores)) if effort_scores else None,
+        "ontask_rate": (sum(ontask_scores) / len(ontask_scores)) if ontask_scores else None,
+    }
+
+
+def send_daily_stats() -> None:
+    stats = compute_3day_stats()
+
+    def fmt(value, suffix: str) -> str:
+        return f"{value:.1f}{suffix}" if value is not None else "n/a"
+
+    send(
+        "3-day check-in stats:\n"
+        f"Reply rate: {fmt(stats['reply_rate'], '%')}\n"
+        f"Effort rate: {fmt(stats['effort_rate'], '/5')}\n"
+        f"On-task rate: {fmt(stats['ontask_rate'], '/5')}"
+    )
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
@@ -378,8 +568,15 @@ def main_loop() -> None:
         data  = load_data()
 
         if is_paused():
-            if now.hour >= WINDOW_END and "evening_review" not in data["days"].get(today, {}):
-                evening_session()
+            if now.hour >= WINDOW_END:
+                day_entry = data["days"].get(today, {})
+                if "evening_review" not in day_entry:
+                    evening_session()
+                if "stats_sent" not in day_entry:
+                    send_daily_stats()
+                    data = load_data()
+                    data["days"].setdefault(today, {})["stats_sent"] = True
+                    save_data(data)
             else:
                 smart_sleep(60)
             continue
@@ -391,8 +588,14 @@ def main_loop() -> None:
             continue
 
         if now.hour >= WINDOW_END:
-            if "evening_review" not in data["days"].get(today, {}):
+            day_entry = data["days"].get(today, {})
+            if "evening_review" not in day_entry:
                 evening_session()
+            if "stats_sent" not in day_entry:
+                send_daily_stats()
+                data = load_data()
+                data["days"].setdefault(today, {})["stats_sent"] = True
+                save_data(data)
             wait = seconds_until_hour_pt(WINDOW_START)
             print(f"[{now_str()}] Evening done. Sleeping {wait/3600:.1f}h until {WINDOW_START}:00 PT")
             smart_sleep(wait)
@@ -417,7 +620,7 @@ def main_loop() -> None:
 
         if WINDOW_START <= now_pt().hour < WINDOW_END and not is_paused():
             try:
-                run_checkin()
+                start_checkin()
             except Exception as e:
                 print(f"[{now_str()}] ERROR in check-in: {e}")
 
@@ -461,7 +664,9 @@ def main() -> None:
     _BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 
     if args.test:
-        run_checkin()
+        start_checkin()
+        print("Check-in sent — reply/vote in Telegram now. Polling for up to 10 min (Ctrl-C to stop)...")
+        smart_sleep(10 * 60)
         return
 
     print(f"Accountability bot started. Window: {WINDOW_START}:00–{WINDOW_END}:00 PT → thread {THREAD_ID}")

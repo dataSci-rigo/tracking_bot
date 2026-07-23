@@ -50,10 +50,15 @@ def _thread_id_of(update: dict) -> "int | None":
 _ALLOWED_UPDATES = [
     "message", "edited_message", "callback_query", "my_chat_member",
     "message_reaction",  # needed for Franklin's advice 👍/👎 tracking; excluded by default
+    "poll_answer",       # needed for accountability_bot's Q3/Q3b 0-5 polls; excluded by default
 ]
 
 
-def _poller(queues: dict, reaction_queue: "queue.Queue") -> None:
+def _poller(queues: dict, keyed_routes: dict) -> None:
+    """queues: thread_id -> Queue, for normal message/callback_query updates.
+    keyed_routes: raw update key ("message_reaction", "poll_answer") -> Queue,
+    for update types that carry no message_thread_id and so can't be routed
+    by topic — routed straight to whichever single bot currently needs them."""
     offset = 0
     while True:
         try:
@@ -79,11 +84,13 @@ def _poller(queues: dict, reaction_queue: "queue.Queue") -> None:
         for upd in data.get("result", []):
             offset = upd["update_id"] + 1
 
-            if "message_reaction" in upd:
-                # Reaction updates carry no message_thread_id, so they can't be
-                # routed by topic like everything else. Only Franklin currently
-                # tracks reactions, so route them straight there.
-                reaction_queue.put(upd)
+            routed = False
+            for key, target_q in keyed_routes.items():
+                if key in upd:
+                    target_q.put(upd)
+                    routed = True
+                    break
+            if routed:
                 continue
 
             thread_id = _thread_id_of(upd)
@@ -129,7 +136,8 @@ def main() -> None:
 
     print(f"Routing topics: pinger={PINGER_THREAD_ID}  accountability={ACCOUNTABILITY_THREAD_ID}  franklin={FRANKLIN_THREAD_ID}")
 
-    threading.Thread(target=_poller, args=(queues, franklin_q), daemon=True, name="poller").start()
+    keyed_routes = {"message_reaction": franklin_q, "poll_answer": acct_q}
+    threading.Thread(target=_poller, args=(queues, keyed_routes), daemon=True, name="poller").start()
 
     import pinger
     import accountability_bot
