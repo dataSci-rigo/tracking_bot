@@ -579,100 +579,10 @@ def _save_log_entry(entry: dict) -> None:
     print(f"  Logged: {entry}")
 
 
-# ── Log follow-up dialog ──────────────────────────────────────────────────────
-
-def _wait_for_choice(options: list[str], timeout: int, sent_id: int) -> str | None:
-    """Wait for a button tap or the first word of a message matching an option."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        for msg in _backend.receive(timeout=min(30.0, deadline - time.time())):
-            text  = msg["text"].strip()
-            first = text.split()[0] if text else ""
-            if text in options or first in options:
-                return text if text in options else first
-    return None
-
-
-def _wait_for_input(timeout: int, sent_id: int) -> str | None:
-    """Wait for any group message. Returns text or None on timeout."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        for msg in _backend.receive(timeout=min(30.0, deadline - time.time())):
-            return msg["text"].strip()
-    return None
-
-
-def _parse_duration(text: str) -> dict:
-    text = text.strip()
-    if ":" in text:
-        try:
-            h, m   = text.split(":", 1)
-            return {"type": "time", "minutes": int(h) * 60 + int(m)}
-        except (ValueError, IndexError):
-            pass
-    else:
-        try:
-            return {"type": "time", "minutes": int(text)}
-        except ValueError:
-            pass
-    return {"type": "time", "raw": text}
-
-
-_RATING_BUTTONS = [[("0", "0"), ("1", "1"), ("2", "2"), ("3", "3"), ("4", "4"), ("5", "5")]]
-
-
-def log_with_followup(text: str) -> None:
-    """Log a free-form entry then ask structured follow-up questions."""
-    entry: dict = {"ts": now_iso(), "entry": text}
-
-    # ── Quantity ──────────────────────────────────────────────────────────────
-    _backend.send_buttons(
-        f'"{text}"\n\nQuantity?',
-        [[("None", "1"), ("Rate 0–5", "2"), ("Metric", "3")]],
-    )
-    qty = _wait_for_choice(["1", "2", "3"], timeout=180, sent_id=0)
-
-    if qty == "2":
-        _backend.send_buttons("Rate quantity 0–5:", _RATING_BUTTONS)
-        val = _wait_for_choice([str(i) for i in range(6)], timeout=120, sent_id=0)
-        if val is not None:
-            entry["quantity"] = {"type": "ordinal", "value": int(val)}
-    elif qty == "3":
-        send_message("Quantity (e.g. '2 glasses', '500 ml'):")
-        val = _wait_for_input(timeout=120, sent_id=0)
-        if val:
-            parts = val.split(None, 1)
-            if len(parts) == 2:
-                try:
-                    entry["quantity"] = {"type": "metric", "value": float(parts[0]), "unit": parts[1]}
-                except ValueError:
-                    entry["quantity"] = {"type": "metric", "raw": val}
-            else:
-                entry["quantity"] = {"type": "metric", "raw": val}
-
-    # ── Duration ──────────────────────────────────────────────────────────────
-    _backend.send_buttons("Duration?", [[("None", "1"), ("Add time", "2")]])
-    dur = _wait_for_choice(["1", "2"], timeout=180, sent_id=0)
-
-    if dur == "2":
-        send_message("Duration (hr:min or minutes — e.g. '1:30' or '45'):")
-        val = _wait_for_input(timeout=120, sent_id=0)
-        if val:
-            entry["duration"] = _parse_duration(val)
-
-    # ── Result ────────────────────────────────────────────────────────────────
-    _backend.send_buttons("Result?", [[("None", "1"), ("Rate 0–5", "2")]])
-    res = _wait_for_choice(["1", "2"], timeout=180, sent_id=0)
-
-    if res == "2":
-        _backend.send_buttons("Rate result 0–5:", _RATING_BUTTONS)
-        val = _wait_for_choice([str(i) for i in range(6)], timeout=120, sent_id=0)
-        if val is not None:
-            entry["result"] = {"type": "ordinal", "value": int(val)}
-
-    # ── Save ──────────────────────────────────────────────────────────────────
-    _save_log_entry(entry)
-    send_message("✓ Saved")
+def log_entry(text: str) -> None:
+    """Log a free-form entry directly — no follow-up questions."""
+    _save_log_entry({"ts": now_iso(), "entry": text})
+    send_message("✓ Logged")
 
 
 # ── Poll helpers (backend-agnostic) ───────────────────────────────────────────
@@ -692,6 +602,13 @@ def poll_for_yes(timeout_sec: int, sent_id: int) -> bool:
     return False
 
 
+def _is_ack_only(text: str) -> bool:
+    """True for a bare acknowledgement word (e.g. a stray "Yes" replying to a
+    reminder that was already confirmed/timed out elsewhere) — these should
+    never be treated as a fresh free-form log entry."""
+    return text.strip().lower() in YES_WORDS
+
+
 def poll_for_reply(code: str, sent_at_iso: str, sent_id: int) -> dict:
     """
     Block until confirmed: a reply to sent_id, or a message containing [CODE].
@@ -703,7 +620,8 @@ def poll_for_reply(code: str, sent_at_iso: str, sent_id: int) -> dict:
             is_reply  = msg["reply_to"] == sent_id
             has_code  = code in msg["text"].upper()
             if not (is_reply or has_code):
-                log_with_followup(msg["text"])
+                if not _is_ack_only(msg["text"]):
+                    log_with_followup(msg["text"])
                 continue
             replied_at = now_iso()
             elapsed    = round(
@@ -725,12 +643,17 @@ def poll_for_reply(code: str, sent_at_iso: str, sent_id: int) -> dict:
 
 
 def smart_wait(seconds: float, reminders: list) -> str:
-    """Wait, logging messages and interrupting if a reminder falls due."""
+    """Wait, logging messages and interrupting if a reminder falls due.
+    Bare acknowledgement words (e.g. a stray "Yes" arriving after its
+    reminder was already confirmed/timed out) are ignored rather than
+    logged as a free-form entry."""
     deadline = time.time() + seconds
     while time.time() < deadline:
         if get_due_reminder(reminders, load_data(), datetime.now()):
             return "reminder_due"
         for msg in _backend.receive(timeout=min(30.0, deadline - time.time())):
+            if _is_ack_only(msg["text"]):
+                continue
             log_with_followup(msg["text"])
     return "done"
 
