@@ -598,7 +598,7 @@ def poll_for_yes(timeout_sec: int, sent_id: int) -> bool:
         for msg in _backend.receive(timeout=min(30.0, deadline - time.time())):
             if msg["reply_to"] == sent_id or msg["text"].lower() in YES_WORDS:
                 return True
-            log_with_followup(msg["text"])
+            log_entry(msg["text"])
     return False
 
 
@@ -621,7 +621,7 @@ def poll_for_reply(code: str, sent_at_iso: str, sent_id: int) -> dict:
             has_code  = code in msg["text"].upper()
             if not (is_reply or has_code):
                 if not _is_ack_only(msg["text"]):
-                    log_with_followup(msg["text"])
+                    log_entry(msg["text"])
                 continue
             replied_at = now_iso()
             elapsed    = round(
@@ -654,7 +654,7 @@ def smart_wait(seconds: float, reminders: list) -> str:
         for msg in _backend.receive(timeout=min(30.0, deadline - time.time())):
             if _is_ack_only(msg["text"]):
                 continue
-            log_with_followup(msg["text"])
+            log_entry(msg["text"])
     return "done"
 
 

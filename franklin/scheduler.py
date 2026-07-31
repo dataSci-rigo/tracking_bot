@@ -70,35 +70,38 @@ async def job_evening():
 
 
 async def job_monday_rotation():
+    """Announce the new week's virtue. current_focus_virtue() is purely
+    date-driven ((today - cycle_start).days // 7 % len(virtues)) and already
+    auto-advances the instant the calendar rolls into Monday — this job
+    fires at 00:01 Monday, by which point date.today() is already that new
+    Monday, so store.current_focus_virtue() already IS the new week's
+    virtue. Do not increment it again here — a prior version did, which
+    silently skipped a virtue every single week (announced one virtue ahead
+    of what /focus, /today, and every other command showed all week)."""
     from bot import send_message
     import inspiration
     import coach as coach_mod
     try:
-        config = store.load_config()
-        virtues = config["virtues"]
-        current = store.current_focus_virtue()
-        current_idx = next(i for i, v in enumerate(virtues) if v["id"] == current["id"])
-        next_idx = (current_idx + 1) % len(virtues)
-        next_virtue = virtues[next_idx]
+        virtue = store.current_focus_virtue()
 
         today = date.today()
         monday = today - timedelta(days=today.weekday())
         week_start = monday.isoformat()
 
-        store.record_focus_change(next_virtue["id"], week_start)
+        store.record_focus_change(virtue["id"], week_start)
 
         refresh_text = await asyncio.get_event_loop().run_in_executor(
-            None, coach_mod.refresh_inspiration, next_virtue["id"]
+            None, coach_mod.refresh_inspiration, virtue["id"]
         )
         if refresh_text:
-            inspiration.set_weekly_refresh(next_virtue["id"], week_start, refresh_text)
+            inspiration.set_weekly_refresh(virtue["id"], week_start, refresh_text)
             preview = refresh_text[:200]
         else:
-            base = inspiration.get_morning_text(next_virtue["id"])
+            base = inspiration.get_morning_text(virtue["id"])
             preview = base[:200]
 
         await send_message(
-            f"New week — focus is now *{next_virtue['name']}*.\n\n{preview}…"
+            f"New week — focus is now *{virtue['name']}*.\n\n{preview}…"
         )
     except Exception:
         logger.exception("Monday rotation job failed")
