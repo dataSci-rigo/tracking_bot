@@ -106,6 +106,8 @@ def _poller(queues: dict, keyed_routes: dict) -> None:
 
 def _run_franklin(raw_queue: "queue.Queue") -> None:
     sys.path.insert(0, str(HERE / "franklin"))
+    import control as franklin_control  # todo_list/franklin/control.py
+    threading.Thread(target=franklin_control.run, daemon=True, name="franklin-control").start()
     import main as franklin_main  # todo_list/franklin/main.py
     asyncio.run(franklin_main.run_fed(raw_queue))
 
