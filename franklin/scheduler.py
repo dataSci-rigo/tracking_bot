@@ -16,9 +16,20 @@ _TZ = pytz.timezone("America/Los_Angeles")
 # Job functions — also used by /debug_fire
 # ---------------------------------------------------------------------------
 
+
+def _enabled() -> bool:
+    """Per-bot on/off toggle (bot_state.py in todo_list/, on the path under
+    run_bots.py). Standalone runs default to enabled."""
+    try:
+        import bot_state
+        return bot_state.enabled("franklin")
+    except Exception:
+        return True
+
+
 async def job_morning():
     from bot import build_morning_message, send_message, is_paused
-    if is_paused():
+    if is_paused() or not _enabled():
         return
     try:
         msg = build_morning_message()
@@ -30,7 +41,7 @@ async def job_morning():
 async def job_nudge():
     from bot import build_nudge_message, send_message, is_paused
     import advice_store
-    if is_paused():
+    if is_paused() or not _enabled():
         return
     try:
         today = date.today().isoformat()
@@ -47,7 +58,7 @@ async def job_generate_advice():
     from bot import is_paused
     import advice_store
     import coach as coach_mod
-    if is_paused():
+    if is_paused() or not _enabled():
         return
     try:
         virtue = store.current_focus_virtue()
@@ -63,6 +74,8 @@ async def job_generate_advice():
 
 async def job_evening():
     from bot import send_message
+    if not _enabled():
+        return
     try:
         await send_message("Time for your evening review. Send /web when ready.")
     except Exception:
@@ -81,6 +94,8 @@ async def job_monday_rotation():
     from bot import send_message
     import inspiration
     import coach as coach_mod
+    if not _enabled():
+        return
     try:
         virtue = store.current_focus_virtue()
 
@@ -109,6 +124,8 @@ async def job_monday_rotation():
 
 async def job_sunday_summary():
     from bot import build_weekly_summary, send_message
+    if not _enabled():
+        return
     try:
         msg = build_weekly_summary()
         await send_message(msg)

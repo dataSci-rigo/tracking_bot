@@ -10,3 +10,6 @@ __pycache__/
 .venv/
 instructions
 CLAUDE.md
+adhd/data/adhd.db
+wpi/data/tracker.db
+bot_state.json

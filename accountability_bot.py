@@ -1,22 +1,32 @@
 #!/usr/bin/env python3
 """
-Accountability Bot — random check-ins via Telegram channel thread.
+Accountability Bot — voice-first random check-ins via Telegram channel thread.
 Synchronous requests-based (mirrors pinger.py architecture).
 
+Answers are VOICE-ONLY: typed text (other than /commands) is never accepted
+as an answer — the bot asks for a voice note instead. Voice notes are
+transcribed (OpenRouter/Gemini, handles Telegram's OGG/Opus natively), and
+check-in transcripts are parsed by Claude into per-question answers plus a
+notes section for anything that didn't fit; the bot reads the parsed answers
+back as confirmation.
+
 Schedule (all times America/Los_Angeles):
-  07:00        "What's your plan for today?" (waits up to 30 min)
-  07:00–23:00  random check-ins every 1–2.5 hr — Q1/Q2 sent as plain messages,
-               Q3 ("Are you working hard?") sent as a message with inline
-               0-5 buttons, with a 0-5 "Are you on task?" follow-up (also
-               inline buttons) once Q3 is answered. Replies are only
-               accepted as *direct replies* (reply_to) to the sent
-               message (Q1/Q2) or a *tap of its own buttons* (Q3/Q3b), open
-               for 24h; asked once, never re-prompted. A late reply/tap
-               after 24h gets "Check-in timed out."
-  23:00        "How much did you get done today?" (waits up to 30 min),
-               followed by a 3-day rolling stats summary (reply rate, effort
-               rate, on-task rate)
+  07:00        "What's your plan for today?" — voice reply, transcribed
+               (waits up to 30 min)
+  07:00–23:00  random check-ins every 1–2.5 hr — ONE message listing all
+               four questions (what doing / what should / working hard 0-5 /
+               on task 0-5); answer all of them in a single voice note sent
+               as a *direct reply* to that message. Open for 24h; asked
+               once, never re-prompted. A late reply gets "Check-in timed
+               out."
+  23:00        "How much did you get done today?" — voice reply, transcribed
+               (waits up to 30 min), followed by a 3-day rolling stats
+               summary (reply rate, effort rate, on-task rate)
   23:00–07:00  silent
+
+Export (for Claude and other bots — payload is self-describing, see _api):
+  HTTP:  GET http://localhost:$RUNBOTS_CONTROL_PORT/accountability/export
+  CLI:   python accountability_bot.py --export [FILE]
 
 Run:   python accountability_bot.py
 Test:  python accountability_bot.py --test   (one check-in immediately)
@@ -25,6 +35,8 @@ Test:  python accountability_bot.py --test   (one check-in immediately)
   PING_BOT_ID            — Telegram bot token
   PINGER_CHANNEL_ID      — e.g. -1003955681692
   ACCOUNTABILITY_THREAD_ID — e.g. 73
+  OPEN_ROUTER            — OpenRouter key (voice transcription)
+  ANTHROPIC_API_KEY      — Claude (transcript → answers parsing)
 """
 from __future__ import annotations
 
@@ -58,12 +70,24 @@ WINDOW_END    = 23   # 11 PM PT
 MIN_GAP_MIN   = 60
 MAX_GAP_MIN   = 150
 
-REPLY_WINDOW_HOURS = 24   # a question's reply stays valid this long, asked only once
-SCALE_OPTIONS      = ["0", "1", "2", "3", "4", "5"]
+REPLY_WINDOW_HOURS = 24   # a check-in's voice reply stays valid this long, asked only once
+
+# Voice pipeline
+OPENROUTER_KEY   = os.getenv("OPEN_ROUTER", "")
+TRANSCRIBE_MODEL = "google/gemini-2.5-flash"   # accepts Telegram's OGG/Opus directly
+PARSE_MODEL      = "claude-opus-5"
+
+CHECKIN_QUESTIONS = [
+    ("q1",      "Q1", "What are you doing?"),
+    ("q2",      "Q2", "What should you be doing?"),
+    ("effort",  "Q3", "Are you working hard? (0-5)"),
+    ("on_task", "Q3b", "Are you on task? (0-5)"),
+]
 
 _BASE_URL = ""
 _offset   = 0
 _queue: "queue.Queue | None" = None
+_voice_hint_last = 0.0   # throttle for the "voice replies only" reminder
 
 
 # ── Time helpers ──────────────────────────────────────────────────────────────
@@ -152,52 +176,21 @@ def send(text: str) -> None:
         print(f"  send error: {e}")
 
 
-def _send_text_question(label: str, prompt: str) -> "dict | None":
-    """Send a plain-text check-in question and return a pending-question
-    record (message_id captured so a later direct reply can be matched)."""
-    payload: dict = {"chat_id": CHANNEL_ID, "text": prompt}
+def _send_tracked(text: str) -> "dict | None":
+    """Send a message and return {message_id, sent_at} so a later direct
+    voice reply can be matched to it."""
+    payload: dict = {"chat_id": CHANNEL_ID, "text": text}
     if THREAD_ID:
         payload["message_thread_id"] = THREAD_ID
     try:
         result = _requests.post(f"{_BASE_URL}/sendMessage", json=payload, timeout=10).json()
         if not result.get("ok"):
-            print(f"  send question error: {result}")
+            print(f"  send error: {result}")
             return None
-        msg = result["result"]
-        return {
-            "label": label, "prompt": prompt, "kind": "text",
-            "message_id": msg["message_id"],
-            "sent_at": now_pt().isoformat(),
-        }
+        return {"message_id": result["result"]["message_id"],
+                "sent_at": now_pt().isoformat()}
     except Exception as e:
-        print(f"  send question error: {e}")
-        return None
-
-
-def _send_scale_question(label: str, prompt: str) -> "dict | None":
-    """Send a question with inline 0-5 buttons (not a native Telegram poll)."""
-    payload: dict = {
-        "chat_id": CHANNEL_ID,
-        "text": prompt,
-        "reply_markup": {
-            "inline_keyboard": [[{"text": o, "callback_data": f"scale:{o}"} for o in SCALE_OPTIONS]],
-        },
-    }
-    if THREAD_ID:
-        payload["message_thread_id"] = THREAD_ID
-    try:
-        result = _requests.post(f"{_BASE_URL}/sendMessage", json=payload, timeout=10).json()
-        if not result.get("ok"):
-            print(f"  send scale question error: {result}")
-            return None
-        msg = result["result"]
-        return {
-            "label": label, "prompt": prompt, "kind": "buttons",
-            "message_id": msg["message_id"],
-            "sent_at": now_pt().isoformat(),
-        }
-    except Exception as e:
-        print(f"  send scale question error: {e}")
+        print(f"  send error: {e}")
         return None
 
 
@@ -210,6 +203,100 @@ def _answer_callback(callback_query_id: str) -> None:
         )
     except Exception:
         pass
+
+
+# ── Voice pipeline: download → transcribe → parse ─────────────────────────────
+
+def _download_voice(file_id: str) -> "bytes | None":
+    try:
+        info = _requests.get(f"{_BASE_URL}/getFile", params={"file_id": file_id}, timeout=15).json()
+        if not info.get("ok"):
+            print(f"  getFile error: {info}")
+            return None
+        path = info["result"]["file_path"]
+        resp = _requests.get(f"https://api.telegram.org/file/bot{TOKEN}/{path}", timeout=30)
+        resp.raise_for_status()
+        return resp.content
+    except Exception as e:
+        print(f"  voice download error: {e}")
+        return None
+
+
+def transcribe_audio(audio_bytes: bytes) -> "str | None":
+    """Transcribe a Telegram voice note (OGG/Opus) via OpenRouter/Gemini —
+    accepts the ogg format natively, no conversion needed. Returns the
+    verbatim transcript, or None on failure/no speech."""
+    import base64
+    try:
+        resp = _requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {OPENROUTER_KEY}"},
+            json={
+                "model": TRANSCRIBE_MODEL,
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text":
+                        "Transcribe this voice note verbatim. Output only the "
+                        "transcript, no commentary. If it contains no speech, "
+                        "reply exactly: NO_SPEECH"},
+                    {"type": "input_audio", "input_audio": {
+                        "data": base64.b64encode(audio_bytes).decode(),
+                        "format": "ogg"}},
+                ]}],
+            },
+            timeout=90,
+        ).json()
+        text = resp.get("choices", [{}])[0].get("message", {}).get("content")
+        if not text or text.strip() == "NO_SPEECH":
+            print(f"  transcription empty/no-speech: {str(resp)[:200]}")
+            return None
+        return text.strip()
+    except Exception as e:
+        print(f"  transcription error: {e}")
+        return None
+
+
+def parse_checkin_transcript(transcript: str) -> "dict | None":
+    """One Claude call: map a free-form voice transcript onto the four
+    check-in questions + a notes section for everything that didn't fit.
+    Returns {"q1": str|None, "q2": str|None, "effort": int|None,
+    "on_task": int|None, "notes": str|None} or None on failure."""
+    import anthropic
+    questions_desc = "\n".join(f"- {key}: {prompt}" for key, _, prompt in CHECKIN_QUESTIONS)
+    try:
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model=PARSE_MODEL,
+            max_tokens=1024,
+            system=(
+                "You parse a transcript of a spoken accountability check-in "
+                "into structured answers. The speaker was asked:\n"
+                f"{questions_desc}\n\n"
+                "Return ONLY a JSON object with keys q1, q2, effort, on_task, "
+                "notes. q1/q2 are concise strings in the speaker's own words "
+                "(lightly cleaned up); effort and on_task are integers 0-5 "
+                "(map verbal ratings like 'pretty hard' sensibly; if the "
+                "speaker gives a number, use it). Use null for any question "
+                "the transcript doesn't answer. Put everything meaningful "
+                "that didn't fit the four answers into notes (null if "
+                "nothing). No markdown fences, no commentary."
+            ),
+            messages=[{"role": "user", "content": transcript}],
+        )
+        text = "".join(b.text for b in response.content if b.type == "text").strip()
+        if text.startswith("```"):
+            text = text.strip("`").lstrip("json").strip()
+        parsed = json.loads(text)
+        out = {}
+        for key in ("q1", "q2", "notes"):
+            val = parsed.get(key)
+            out[key] = str(val).strip() if val not in (None, "") else None
+        for key in ("effort", "on_task"):
+            val = parsed.get(key)
+            out[key] = max(0, min(5, int(val))) if val is not None else None
+        return out
+    except Exception as e:
+        print(f"  parse error: {e}")
+        return None
 
 
 def _get_updates(timeout: int = 30) -> list:
@@ -262,105 +349,114 @@ def _drain() -> None:
             break
 
 
+def _log_unanswered_checkin(pending_rec: dict) -> None:
+    """Log all four questions of a check-in as unanswered (expiry/timeout)."""
+    for _, label, prompt in CHECKIN_QUESTIONS:
+        _log_checkin_event({
+            "label": label, "prompt": prompt, "kind": "voice",
+            "message_id": pending_rec.get("message_id"),
+            "sent_at": pending_rec["sent_at"],
+            "answered_at": None, "expired": True, "value": None,
+        })
+
+
 def _expire_stale_pending() -> None:
-    """Resolve any pending question whose 24h reply window has lapsed with
-    no reply attempt at all, so it still counts as unanswered in the daily
-    stats instead of lingering forever."""
+    """Resolve any pending check-in whose 24h reply window has lapsed with
+    no reply at all, so its questions still count as unanswered in the
+    daily stats instead of lingering forever."""
     pending = load_pending()
     if not pending:
         return
     now = now_pt()
     remaining = []
-    for q in pending:
-        sent_at = datetime.fromisoformat(q["sent_at"])
+    for rec in pending:
+        sent_at = datetime.fromisoformat(rec["sent_at"])
         if now - sent_at > timedelta(hours=REPLY_WINDOW_HOURS):
-            _log_checkin_event({**q, "answered_at": None, "expired": True, "value": None})
+            _log_unanswered_checkin(rec)
         else:
-            remaining.append(q)
+            remaining.append(rec)
     if len(remaining) != len(pending):
         save_pending(remaining)
 
 
-def _handle_text_reply(msg: dict) -> bool:
-    """If `msg` is a direct reply to a pending text question (Q1/Q2), resolve
-    it (confirmation or timeout) and return True. Otherwise False."""
-    reply_to = msg.get("reply_to_message", {}).get("message_id")
-    if reply_to is None:
-        return False
+def _voice_only_hint() -> None:
+    """Remind (throttled) that answers must be voice notes."""
+    global _voice_hint_last
+    if time.time() - _voice_hint_last < 300:
+        return
+    _voice_hint_last = time.time()
+    send("🎤 Voice replies only — send a voice note to answer. (Commands like /help still work as text.)")
 
-    pending = load_pending()
-    match = next((q for q in pending if q["kind"] == "text" and q["message_id"] == reply_to), None)
-    if match is None:
-        return False
 
-    text        = msg.get("text", "").strip()
+def _process_voice_checkin(match: dict, msg: dict) -> None:
+    """A voice note arrived as a direct reply to the pending check-in:
+    enforce the 24h window, transcribe, parse into the four answers + notes,
+    log, and read the parsed answers back."""
+    pending     = load_pending()
     received_at = now_pt()
     sent_at     = datetime.fromisoformat(match["sent_at"])
 
     if received_at - sent_at > timedelta(hours=REPLY_WINDOW_HOURS):
         send("Check-in timed out.")
-        _log_checkin_event({**match, "answered_at": None, "expired": True, "value": None})
-    else:
-        send(
-            f"{match['label']}: Sent {sent_at.strftime('%H:%M')} "
-            f"Received {received_at.strftime('%H:%M')}, Message: {text[:100]}"
-        )
-        _log_checkin_event({**match, "answered_at": received_at.isoformat(), "expired": False, "value": text})
-
-    save_pending([q for q in pending if not (q["kind"] == "text" and q["message_id"] == reply_to)])
-    return True
-
-
-def _handle_callback_query(cq: dict) -> None:
-    """Match an incoming inline-button tap to a pending buttons question (Q3
-    or its Q3b follow-up), resolve it, and — if it was Q3 — send the Q3b
-    follow-up. Always answers the callback so Telegram clears the button's
-    loading spinner."""
-    _answer_callback(cq["id"])
-
-    cq_msg = cq.get("message") or {}
-    if cq_msg.get("chat", {}).get("id") != CHANNEL_ID:
-        return
-    if THREAD_ID and cq_msg.get("message_thread_id") != THREAD_ID:
+        _log_unanswered_checkin(match)
+        save_pending([r for r in pending if r["message_id"] != match["message_id"]])
         return
 
-    data = cq.get("data", "")
-    if not data.startswith("scale:"):
-        return
-    value = data.split(":", 1)[1]
+    file_id = msg.get("voice", {}).get("file_id") or msg.get("audio", {}).get("file_id")
+    audio = _download_voice(file_id) if file_id else None
+    transcript = transcribe_audio(audio) if audio else None
+    if transcript is None:
+        send("Couldn't transcribe that voice note — please try again (same reply).")
+        return  # keep pending so a retry can match
 
-    message_id  = cq_msg.get("message_id")
-    pending     = load_pending()
-    match       = next((q for q in pending if q["kind"] == "buttons" and q["message_id"] == message_id), None)
-    if match is None:
-        return
+    parsed = parse_checkin_transcript(transcript)
+    if parsed is None:
+        send("Transcribed but couldn't parse the answers — please try again (same reply).")
+        return  # keep pending so a retry can match
 
-    remaining   = [q for q in pending if not (q["kind"] == "buttons" and q["message_id"] == message_id)]
-    received_at = now_pt()
-    sent_at     = datetime.fromisoformat(match["sent_at"])
-    timed_out   = received_at - sent_at > timedelta(hours=REPLY_WINDOW_HOURS)
+    # Log one event per question (labels Q1/Q2/Q3/Q3b feed the 3-day stats;
+    # Q3=effort, Q3b=on-task). A question the voice note didn't cover counts
+    # as unanswered.
+    for key, label, prompt in CHECKIN_QUESTIONS:
+        value = parsed.get(key)
+        _log_checkin_event({
+            "label": label, "prompt": prompt, "kind": "voice",
+            "message_id": match["message_id"], "sent_at": match["sent_at"],
+            "answered_at": received_at.isoformat() if value is not None else None,
+            "expired": False,
+            "value": str(value) if value is not None else None,
+        })
 
-    if timed_out:
-        send("Check-in timed out.")
-        _log_checkin_event({**match, "answered_at": None, "expired": True, "value": None})
-    else:
-        send(
-            f"{match['label']}: Sent {sent_at.strftime('%H:%M')} "
-            f"Received {received_at.strftime('%H:%M')}, Message: {value}"
-        )
-        _log_checkin_event({**match, "answered_at": received_at.isoformat(), "expired": False, "value": value})
-        if match["label"] == "Q3":
-            followup = _send_scale_question("Q3b", "Are you on task?")
-            if followup is not None:
-                remaining.append(followup)
+    # Store the raw transcript + notes alongside the day's log
+    data = load_data()
+    day = data["days"].setdefault(match["sent_at"][:10], {})
+    day.setdefault("checkin_voice", []).append({
+        "sent_at": match["sent_at"],
+        "received_at": received_at.isoformat(),
+        "transcript": transcript,
+        "parsed": parsed,
+    })
+    save_data(data)
+    save_pending([r for r in load_pending() if r["message_id"] != match["message_id"]])
 
-    save_pending(remaining)
+    def fmt_scale(v):
+        return f"{v}/5" if v is not None else "—"
+    send(
+        "✅ Check-in recorded:\n"
+        f"1. Doing: {parsed['q1'] or '—'}\n"
+        f"2. Should be doing: {parsed['q2'] or '—'}\n"
+        f"3. Working hard: {fmt_scale(parsed['effort'])}\n"
+        f"4. On task: {fmt_scale(parsed['on_task'])}\n"
+        f"📝 Notes: {parsed['notes'] or '—'}"
+    )
+    print(f"[{now_str()}] Voice check-in processed ({len(transcript)} chars transcript)")
 
 
 def _poll(timeout: float) -> list[str]:
-    """Poll for up to `timeout` seconds. Returns text messages (for morning/
-    evening's plain-text wait); handles commands, check-in replies, and
-    check-in button taps inline."""
+    """Poll for up to `timeout` seconds. Handles commands, check-in voice
+    replies, and the voice-only rule inline. Returns TRANSCRIPTS of voice
+    notes that weren't check-in replies — morning/evening's wait_for_reply
+    consumes those as its answers (typed text is never an answer)."""
     if timeout <= 0:
         return []
     _expire_stale_pending()
@@ -369,7 +465,7 @@ def _poll(timeout: float) -> list[str]:
     for upd in updates:
         cq = upd.get("callback_query")
         if cq is not None:
-            _handle_callback_query(cq)
+            _answer_callback(cq["id"])  # stray tap on an old buttons message
             continue
 
         msg = upd.get("message")
@@ -379,15 +475,31 @@ def _poll(timeout: float) -> list[str]:
             continue
         if THREAD_ID and msg.get("message_thread_id") != THREAD_ID:
             continue
+
+        voice = msg.get("voice") or msg.get("audio")
+        if voice:
+            reply_to = msg.get("reply_to_message", {}).get("message_id")
+            match = next((r for r in load_pending() if r["message_id"] == reply_to), None)
+            if match is not None:
+                _process_voice_checkin(match, msg)
+                continue
+            # Voice not tied to a check-in: transcribe for morning/evening waits
+            audio_bytes = _download_voice(voice.get("file_id"))
+            transcript = transcribe_audio(audio_bytes) if audio_bytes else None
+            if transcript:
+                texts.append(transcript)
+            else:
+                send("Couldn't transcribe that voice note — please try again.")
+            continue
+
         text = msg.get("text", "").strip()
         if not text:
             continue
         if text.startswith("/"):
             _handle_command(text)
             continue
-        if _handle_text_reply(msg):
-            continue
-        texts.append(text)
+        # Typed text is never accepted as an answer
+        _voice_only_hint()
     return texts
 
 
@@ -458,17 +570,22 @@ def _handle_command(raw: str) -> None:
             "/help — show this message\n\n"
             f"Schedule (PT): {WINDOW_START}:00 morning plan · check-ins every "
             f"{MIN_GAP_MIN}–{MAX_GAP_MIN} min · {WINDOW_END}:00 evening review + 3-day stats\n\n"
-            "Check-ins: Q1/Q2 are plain messages, Q3 is \"Are you working "
-            "hard?\" with inline 0-5 buttons, followed by 0-5 buttons for "
-            "\"Are you on task?\" once answered. Only direct replies/button "
-            f"taps count, asked once, open for {REPLY_WINDOW_HOURS}h."
+            "Check-ins are 🎤 voice-only: one message asks all four questions "
+            "(doing / should be doing / working hard 0-5 / on task 0-5) — "
+            "answer them all in a single voice note sent as a direct reply. "
+            "It's transcribed, parsed into answers + notes, and read back. "
+            f"Asked once, open for {REPLY_WINDOW_HOURS}h. Morning plan and "
+            "evening review are voice notes too. Typed text is never an "
+            "answer; commands still work."
         )
 
 
 # ── Wait for reply ────────────────────────────────────────────────────────────
 
 def wait_for_reply(timeout: float) -> str | None:
-    """Block up to `timeout` seconds for one text reply, handling commands along the way."""
+    """Block up to `timeout` seconds for one VOICE reply (returns its
+    transcript), handling commands along the way. Typed text is never
+    accepted as an answer."""
     _drain()
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -495,48 +612,53 @@ def smart_sleep(seconds: float) -> None:
 
 def morning_session() -> None:
     print(f"[{now_str()}] Morning session")
-    send("Good morning! What's your plan for today?")
+    send("Good morning! 🎤 What's your plan for today? (voice note)")
     plan = wait_for_reply(timeout=30 * 60)
     data = load_data()
     data["days"].setdefault(today_str(), {})["plan"] = plan or "(no response)"
     save_data(data)
     if plan:
-        send("Got it! Good luck today.")
+        send(f"Got it — your plan:\n{plan[:500]}\nGood luck today!")
     else:
         print("  No plan response — moving on")
 
 
 def evening_session() -> None:
     print(f"[{now_str()}] Evening session")
-    send("How much did you get done today?")
+    send("🎤 How much did you get done today? (voice note)")
     review = wait_for_reply(timeout=30 * 60)
     data = load_data()
     data["days"].setdefault(today_str(), {})["evening_review"] = review or "(no response)"
     save_data(data)
     if review:
-        send("Nice work today. Rest up!")
+        send(f"Recorded:\n{review[:500]}\nNice work today. Rest up!")
     else:
         print("  No review response — moving on")
 
 
 def start_checkin() -> None:
-    """Fire Q1/Q2 (plain text) and Q3 (0-5 inline buttons) and return
-    immediately — replies are resolved asynchronously by _poll() as they
-    arrive (or as "Check-in timed out" if a late reply/tap shows up after
-    24h). Never re-prompted: each question is sent exactly once."""
+    """Send ONE message listing all four questions and return immediately —
+    the answer is a single voice note sent as a direct reply, resolved
+    asynchronously by _poll() (transcribe → parse → read back). Asked once,
+    never re-prompted; open for 24h, after which a late reply gets
+    "Check-in timed out"."""
     print(f"[{now_str()}] Starting check-in")
-    send("Hey! Quick accountability check-in.")
-
+    rec = _send_tracked(
+        "🎤 Accountability check-in — reply to THIS message with one voice "
+        "note answering:\n"
+        "1. What are you doing?\n"
+        "2. What should you be doing?\n"
+        "3. Are you working hard? (0-5)\n"
+        "4. Are you on task? (0-5)\n"
+        "Anything extra you say goes into Notes."
+    )
+    if rec is None:
+        print(f"[{now_str()}] Check-in send failed")
+        return
     pending = load_pending()
-    for q in (
-        _send_text_question("Q1", "What are you doing?"),
-        _send_text_question("Q2", "What should you be doing?"),
-        _send_scale_question("Q3", "Are you working hard?"),
-    ):
-        if q is not None:
-            pending.append(q)
+    pending.append({**rec, "kind": "voice", "label": "checkin"})
     save_pending(pending)
-    print(f"[{now_str()}] Check-in questions sent; replies open for {REPLY_WINDOW_HOURS}h")
+    print(f"[{now_str()}] Check-in sent; voice reply open for {REPLY_WINDOW_HOURS}h")
 
 
 def compute_3day_stats() -> dict:
@@ -582,8 +704,21 @@ def send_daily_stats() -> None:
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
+def _bot_enabled() -> bool:
+    """Per-bot on/off toggle (bot_state.py, same dir). Standalone-safe."""
+    try:
+        import bot_state
+        return bot_state.enabled("accountability")
+    except Exception:
+        return True
+
+
 def main_loop() -> None:
     while True:
+        if not _bot_enabled():
+            time.sleep(60)
+            continue
+
         now   = now_pt()
         today = today_str()
         data  = load_data()
@@ -668,12 +803,89 @@ def run(update_queue: "queue.Queue | None" = None) -> None:
     main_loop()
 
 
+# ── Export (for Claude and other bots) ────────────────────────────────────────
+
+def build_export() -> dict:
+    """Full machine-readable export of the accountability data. The payload
+    is self-describing: `_api` documents where to fetch it and what every
+    field means, so Claude or any other bot can consume it without reading
+    this source file."""
+    data = load_data()
+    return {
+        "_api": {
+            "name": "accountability-bot export",
+            "version": 2,
+            "description": (
+                "Complete data export of the accountability bot: daily "
+                "morning plans, evening reviews, voice check-ins (transcripts "
+                "+ parsed answers), per-question answer log, and 3-day "
+                "rolling stats. All timestamps are ISO-8601 in "
+                "America/Los_Angeles unless noted."
+            ),
+            "how_to_fetch": {
+                "http": "GET http://localhost:" + os.getenv("RUNBOTS_CONTROL_PORT", "8767")
+                        + "/accountability/export  (VM-local; part of the run_bots control server)",
+                "cli": "python accountability_bot.py --export [FILE]  (prints JSON to stdout, or writes FILE)",
+            },
+            "schema": {
+                "days": {
+                    "<YYYY-MM-DD>": {
+                        "plan": "morning plan — transcript of the user's voice reply, or '(no response)'",
+                        "evening_review": "evening review — transcript of the user's voice reply, or '(no response)'",
+                        "goals": "optional, set via /goals <text>",
+                        "summary": "optional, set via /sum <text>",
+                        "stats_sent": "bool — the nightly 3-day stats message went out",
+                        "checkin_log": [{
+                            "label": "Q1|Q2|Q3|Q3b — Q1=what doing, Q2=what should be doing, Q3=working hard 0-5 (effort), Q3b=on task 0-5",
+                            "prompt": "the question text as asked",
+                            "kind": "voice (current) | text/buttons (historic entries from the pre-voice flow)",
+                            "sent_at": "when the check-in was sent",
+                            "answered_at": "when the answer arrived, null = unanswered",
+                            "expired": "true when the 24h reply window lapsed",
+                            "value": "the answer: free text for Q1/Q2, '0'-'5' for Q3/Q3b, null if unanswered",
+                        }],
+                        "checkin_voice": [{
+                            "sent_at": "check-in send time",
+                            "received_at": "voice reply time",
+                            "transcript": "verbatim transcript of the voice note",
+                            "parsed": "{q1, q2, effort, on_task, notes} — Claude's mapping of the transcript onto the questions; notes holds anything that didn't fit",
+                        }],
+                    },
+                },
+                "sessions": "legacy pre-2026-07-22 check-in records (question/answer lists)",
+                "stats_3day": {
+                    "reply_rate": "percent of check-in questions answered over the last 3 days (null if none sent)",
+                    "effort_rate": "mean Q3 'working hard' score 0-5 over the last 3 days",
+                    "ontask_rate": "mean Q3b 'on task' score 0-5 over the last 3 days",
+                },
+            },
+        },
+        "generated_at": now_pt().isoformat(),
+        "timezone": "America/Los_Angeles",
+        "days": data.get("days", {}),
+        "sessions": data.get("sessions", []),
+        "stats_3day": compute_3day_stats(),
+    }
+
+
 def main() -> None:
     global _BASE_URL
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--test", action="store_true", help="Run one check-in immediately then exit")
+    parser.add_argument("--export", nargs="?", const="-", metavar="FILE",
+                        help="Print the full data export as JSON (or write it to FILE) and exit")
     args = parser.parse_args()
+
+    if args.export is not None:
+        doc = json.dumps(build_export(), indent=2)
+        if args.export == "-":
+            print(doc)
+        else:
+            Path(args.export).write_text(doc)
+            print(f"Export written to {args.export}")
+        return
 
     if not TOKEN:
         raise ValueError("PING_BOT_ID not set in .env")
@@ -686,7 +898,7 @@ def main() -> None:
 
     if args.test:
         start_checkin()
-        print("Check-in sent — reply/vote in Telegram now. Polling for up to 10 min (Ctrl-C to stop)...")
+        print("Check-in sent — voice-reply in Telegram now. Polling for up to 10 min (Ctrl-C to stop)...")
         smart_sleep(10 * 60)
         return
 

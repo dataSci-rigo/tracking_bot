@@ -1,0 +1,631 @@
+# Willpower Instinct — 14-Week Program Content
+# Weeks 1-10 follow Kelly McGonigal's book; weeks 11-14 extend it
+# (Atomic Habits/Wood, Dopamine Nation, Deep Work/Flow, Neff/CBT).
+# Edit this file freely; restart the bot to apply changes.
+
+weeks:
+  - week_number: 1
+    title: "I Will, I Won't, I Want"
+    theme: >
+      The three powers of willpower. This week you name your challenge, observe
+      your relationship with it, and discover what your brain and body are
+      actually doing — without trying to change anything yet.
+    microscope:
+      text: >
+        Track your willpower choices all week. Every time you face your
+        challenge — the urge, the moment of decision, what you did — simply
+        notice and note it. Don't try to change anything. You're a scientist
+        observing yourself in the field.
+      daily_prompt: "What did you notice about your challenge today? Any surprises about when or why the urge showed up?"
+    experiment:
+      text: >
+        Write down your three powers each morning and review them tonight:
+        I WILL (your positive habit), I WON'T (what you're avoiding),
+        I WANT (the long-term goal that makes both worth it). Keep them
+        somewhere visible — phone lock screen, sticky note, journal.
+      daily_prompt: "Did naming your three powers shift how you showed up today? Even slightly?"
+    daily_prompts:
+      - "What did you notice about your challenge today? Any patterns?"
+      - "When did you feel most in control? What was different about that moment?"
+      - "What were you thinking or feeling right before a willpower moment?"
+      - "Did reviewing your I Will / I Won't / I Want this morning change how you approached the day?"
+      - "What surprised you most about your own behavior this week?"
+      - "What triggered the strongest urge today? How did you respond?"
+      - "If you could give yourself one piece of advice about your challenge, what would it be?"
+    structured_questions:
+      - id: energy_level
+        label: "Energy level today"
+        type: scale_1_5
+      - id: challenge_adherence
+        label: "Did you honor your challenge today?"
+        type: yes_no_partial
+      - id: urge_count
+        label: "How many urges did you notice?"
+        type: count_0_10
+
+  - week_number: 2
+    title: "The Willpower Instinct"
+    theme: >
+      Willpower is a biological state, not a character trait. Heart rate
+      variability (HRV) is your body's measure of self-control reserve.
+      The pause-and-plan response — the opposite of fight-or-flight — is
+      what makes self-control possible. You can train it with your breath.
+    microscope:
+      text: >
+        Notice the physical state of your body when you face your challenge.
+        What does temptation feel like? What does self-control feel like?
+        Are you energised or depleted? Calm or anxious? Treat your body as
+        a data source this week, not an obstacle.
+      daily_prompt: "What did you notice in your body when you faced your challenge today? Tense, tired, calm, agitated?"
+    experiment:
+      text: >
+        Practice slow breathing once a day: inhale for 4 counts, exhale for
+        6 counts. Aim for 4–6 breaths per minute, 5 minutes total. Do it
+        before a predictable willpower moment if possible (morning coffee,
+        before lunch, right before your usual slip time). Notice whether
+        it changes your sense of control.
+      daily_prompt: "Did you do the slow breathing today? What, if anything, did you notice afterward?"
+    daily_prompts:
+      - "What did your body feel like when temptation hit today?"
+      - "Did you practice slow breathing? When did you do it?"
+      - "On a scale of 1–5, how in-control did you feel at your most challenged moment today?"
+      - "Was there a moment today when you paused before acting? What happened?"
+      - "What physical cues signal that your self-control is running low?"
+      - "Did the breathing practice feel different today than yesterday?"
+      - "How would you describe your HRV state today — depleted or replenished?"
+    structured_questions:
+      - id: energy_level
+        label: "Energy level today"
+        type: scale_1_5
+      - id: challenge_adherence
+        label: "Did you honor your challenge today?"
+        type: yes_no_partial
+      - id: urge_count
+        label: "How many urges did you notice?"
+        type: count_0_10
+      - id: breathing_done
+        label: "Did you do the slow breathing exercise?"
+        type: yes_no
+
+  - week_number: 3
+    title: "Too Tired to Resist"
+    theme: >
+      Willpower is like a muscle — it fatigues with use and recovers with
+      rest. The biggest threats to your reserve are sleep deprivation,
+      chronic stress, and poor recovery. The biggest wins come from sleep,
+      exercise, and strategic rest — not from trying harder.
+    microscope:
+      text: >
+        Track the connection between sleep, energy, and willpower. Each
+        morning, note how you slept. Each evening, rate how your willpower
+        held up. Look for the pattern over the week — your data will be
+        more convincing than the theory.
+      daily_prompt: "How did last night's sleep affect your willpower today? Rate the connection."
+    experiment:
+      text: >
+        Choose one physical recovery booster this week and protect it:
+        (a) Sleep 30 more minutes than usual — guard the bedtime ruthlessly,
+        (b) Add a 10-minute walk at your lowest willpower point of the day, or
+        (c) Take a 5-minute "physiological sigh" break when depleted (two
+        inhales through the nose, one long exhale). Track it daily.
+      daily_prompt: "Did you do your recovery experiment today? What effect did you notice on your willpower reserve?"
+    daily_prompts:
+      - "How rested did you wake up feeling? Did it show in your self-control today?"
+      - "What time did you go to bed last night? Did that feel like enough?"
+      - "At what point in the day did your willpower feel lowest?"
+      - "Did you do your recovery experiment (sleep/walk/sigh break) today?"
+      - "What drained your willpower most today — decisions, emotions, or physical tiredness?"
+      - "What would it look like to protect your willpower reserve tomorrow?"
+      - "Looking at the whole week: what's the clearest pattern between recovery and self-control?"
+    structured_questions:
+      - id: energy_level
+        label: "Energy level today"
+        type: scale_1_5
+      - id: challenge_adherence
+        label: "Did you honor your challenge today?"
+        type: yes_no_partial
+      - id: urge_count
+        label: "How many urges did you notice?"
+        type: count_0_10
+      - id: sleep_hours
+        label: "Hours of sleep last night"
+        type: sleep_hours
+      - id: exercise_done
+        label: "Did you exercise or do your recovery experiment?"
+        type: yes_no
+
+  # ── Weeks 4-10: stubbed. Fill in before starting that phase. ──────────────
+
+  - week_number: 4
+    title: "License to Sin"
+    theme: >
+      Moral licensing: every good act creates a credit your brain tries to
+      spend on indulgence. Exercising "earns" the dessert; resisting once
+      makes giving in tomorrow feel fair. The very things that make you feel
+      virtuous can become the justification for failing. This week you catch
+      yourself doing the math.
+    microscope:
+      text: >
+        Track moments when past good behavior becomes an excuse for giving in.
+        Notice the logic: "I've been so good about X, I deserve Y." How often
+        does feeling virtuous actually weaken your resolve? You're looking for
+        the credit-and-spend pattern in your own life.
+      daily_prompt: "Did you catch yourself feeling you'd 'earned' a break from your challenge today? What triggered it?"
+    experiment:
+      text: >
+        When you feel you deserve a reward for good behavior, pause and ask:
+        "Would I give this same permission to someone who hadn't been good?"
+        Separate the two decisions — the past good thing and the current
+        choice — and evaluate each on its own merits. Notice whether unlinking
+        them changes what you choose.
+      daily_prompt: "Did you catch the licensing logic before acting on it today? What happened when you separated the two decisions?"
+    daily_prompts:
+      - "Did you catch yourself feeling virtuous today — and did that feeling affect your challenge?"
+      - "When did you feel you'd 'earned' something? Was the reward related to your actual goal?"
+      - "Did you give yourself credit for thinking about your challenge even when you didn't act on it?"
+      - "Notice any 'I've been good, so...' moments today. What followed?"
+      - "What felt like progress today? Did that feeling help or hurt your later choices?"
+      - "Did you treat a single good choice as proof you're 'a good person' — and then use that to justify a slip?"
+      - "Looking back at the week: when did feeling virtuous most undermine your actual behavior?"
+    structured_questions:
+      - id: energy_level
+        label: "Energy level today"
+        type: scale_1_5
+      - id: challenge_adherence
+        label: "Did you honor your challenge today?"
+        type: yes_no_partial
+      - id: urge_count
+        label: "How many urges did you notice?"
+        type: count_0_10
+      - id: licensing_caught
+        label: "Did you catch a moral licensing moment today?"
+        type: yes_no
+
+  - week_number: 5
+    title: "The Brain's Big Lie"
+    theme: >
+      Dopamine drives wanting, not liking — the anticipation of a reward
+      feels better than the reward itself. Your brain floods with dopamine
+      at the promise of relief, pleasure, or excitement, and that flood feels
+      like certainty that you'll feel better if you give in. The experiment
+      this week: test the promise against reality, and learn to surf the
+      dopamine wave rather than act on it.
+    microscope:
+      text: >
+        When an urge hits, pay attention to what your brain is promising.
+        "If I just have this, I'll feel better." Then — if you do give in —
+        notice what you actually feel. Does reality match the promise?
+        Track the gap between the anticipation and the experience all week.
+      daily_prompt: "When temptation hit today, what did your brain promise you'd feel? Did reality match the promise?"
+    experiment:
+      text: >
+        Practice urge surfing: when a craving arrives, don't act and don't
+        fight — just observe. Set a 10-minute timer. Notice where in your
+        body the urge lives, how strong it is, whether it's rising or fading.
+        Cravings are waves; they peak and pass. The goal isn't to kill the
+        urge but to prove to yourself that you can ride it without wiping out.
+      daily_prompt: "Did you try urge surfing today? What did you notice as you observed the craving without acting on it?"
+    daily_prompts:
+      - "What did desire feel like in your body today — before you acted on it?"
+      - "Did you give in to something today? How did it feel vs. how you expected it to feel?"
+      - "What promise did your brain make today about your challenge? Was it accurate?"
+      - "Did you try waiting out an urge? How long did the peak last?"
+      - "What triggers the strongest dopamine hit for your challenge — sight, smell, thought, boredom?"
+      - "Did you notice yourself chasing relief more than actual pleasure today?"
+      - "Looking at the week: how often did the promise of reward match what you actually experienced?"
+    structured_questions:
+      - id: energy_level
+        label: "Energy level today"
+        type: scale_1_5
+      - id: challenge_adherence
+        label: "Did you honor your challenge today?"
+        type: yes_no_partial
+      - id: urge_count
+        label: "How many urges did you notice?"
+        type: count_0_10
+      - id: urge_surfed
+        label: "Did you try urge surfing (observe without acting) today?"
+        type: yes_no
+
+  - week_number: 6
+    title: "What the Hell"
+    theme: >
+      One slip triggers the what-the-hell effect: "I already ruined it —
+      what's the point?" Guilt and self-criticism feel like motivation but
+      actually make relapse more likely. The real recovery tool is
+      self-compassion — not letting yourself off the hook, but treating a
+      slip as information rather than proof of failure. This week you learn
+      the difference between accountability and shame-spiraling.
+    microscope:
+      text: >
+        Watch what happens in the minutes and hours after you give in.
+        Do you spiral ("the day is ruined, might as well keep going") or
+        recover quickly? What does your self-talk sound like? Notice whether
+        guilt or self-criticism actually makes you more likely to give in
+        again — or less. You're looking for the what-the-hell trigger in
+        your own pattern.
+      daily_prompt: "If you gave in today, what was your first thought afterward? Did it lead to a spiral or a recovery?"
+    experiment:
+      text: >
+        When you slip, practice self-compassion as a deliberate technique:
+        acknowledge what happened without catastrophizing, remind yourself
+        that slips are part of every change process, and ask what you'd say
+        to a close friend in the same situation — then say that to yourself.
+        This isn't self-indulgence; research shows self-compassion produces
+        more accountability and faster recovery than guilt does.
+      daily_prompt: "After a slip or struggle today, did you practice self-compassion? What did you say to yourself — and did it help you get back on track?"
+    daily_prompts:
+      - "Did you notice a what-the-hell moment today — one slip leading to more?"
+      - "What was your self-talk after your hardest moment today?"
+      - "Did guilt or self-criticism motivate you today, or did it paralyze you?"
+      - "How did you respond to a slip today — spiral, recover, or something else?"
+      - "What would you say to a close friend who gave in to the same challenge?"
+      - "Did stress today lead to more giving in? How did those two things connect?"
+      - "Looking at the week: what's the difference between holding yourself accountable and shame-spiraling?"
+    structured_questions:
+      - id: energy_level
+        label: "Energy level today"
+        type: scale_1_5
+      - id: challenge_adherence
+        label: "Did you honor your challenge today?"
+        type: yes_no_partial
+      - id: urge_count
+        label: "How many urges did you notice?"
+        type: count_0_10
+      - id: self_compassion_used
+        label: "Did you practice self-compassion after a slip or struggle today?"
+        type: yes_no
+
+  - week_number: 7
+    title: "Putting the Future on Sale"
+    theme: >
+      Delay discounting: the brain slashes the value of future rewards the
+      moment a present temptation is in view. Your future self feels like a
+      stranger — someone who will somehow have more willpower than you do.
+      This week you shrink the discount: make the future concrete, put
+      delays between you and temptation, and precommit before the moment
+      of choice arrives.
+    microscope:
+      text: >
+        Catch yourself discounting. Every time you choose the smaller-sooner
+        reward over the larger-later one, note what the future reward was
+        "sold" for. Also notice how you think about your future self — is
+        that person real to you, or an abstraction you keep handing the
+        bill to?
+      daily_prompt: "What future reward did you put on sale today, and what did you sell it for?"
+    experiment:
+      text: >
+        Use the 10-minute rule: when temptation hits, wait 10 minutes before
+        giving in — put the temptation on the far side of the delay. For
+        "I will" challenges, flip it: commit to just 10 minutes of the task.
+        Add one precommitment this week — decide in advance, remove the
+        easy exit (delete the app, don't bring the card, schedule it).
+      daily_prompt: "Did you use the 10-minute rule or a precommitment today? What happened on the other side of the delay?"
+    daily_prompts:
+      - "When temptation hit today, what would waiting 10 minutes have changed?"
+      - "Describe your future self tonight — the one who inherits today's choices. Concrete or fuzzy?"
+      - "What did you precommit to today, and did the moment of choice ever even arrive?"
+      - "What's the exchange rate lately — how cheap has your long-term goal been selling for?"
+      - "Did the 10-minute delay kill the urge, weaken it, or just postpone it?"
+      - "If your future self could send you one sentence about today, what would it say?"
+      - "Looking back at the week: which worked better for you — delays or precommitments?"
+    structured_questions:
+      - id: energy_level
+        label: "Energy level today"
+        type: scale_1_5
+      - id: challenge_adherence
+        label: "Did you honor your challenge today?"
+        type: yes_no_partial
+      - id: urge_count
+        label: "How many urges did you notice?"
+        type: count_0_10
+
+  - week_number: 8
+    title: "Infected!"
+    theme: >
+      Willpower failures — and willpower strength — are contagious. You
+      unconsciously catch goals, habits, and slips from the people around
+      you: mirror neurons, social proof, and "if they can, I can" licensing.
+      This week you map your social field: who infects you with your
+      challenge, and who immunizes you against it.
+    microscope:
+      text: >
+        Track the social component of every willpower moment. Who was
+        around — in person or on a screen — right before the urge? Whose
+        habits are you mirroring without deciding to? Notice also the
+        reverse: moments when someone else's discipline pulled you upward.
+      daily_prompt: "Who or what was in your field right before today's strongest urge — and did they push you toward it or away from it?"
+    experiment:
+      text: >
+        Run an immune-boosting protocol: start each day by spending two
+        minutes thinking about someone whose self-control you admire — a
+        willpower role model. When you feel yourself catching an urge from
+        the environment, name the infection out loud ("that's contagion,
+        not my goal"). If you can, tell one person about your challenge
+        this week — public commitment is social medicine.
+      daily_prompt: "Did you call on your willpower role model today? Did naming a contagion moment change what you did next?"
+    daily_prompts:
+      - "Whose habits did you catch today — chosen or not?"
+      - "Who is your willpower role model, and what would they have done in your hardest moment today?"
+      - "Did social media or your feed hand you an urge today? Which one?"
+      - "Did anyone's presence make your challenge easier today? What did they do?"
+      - "Have you told anyone about your challenge? What changed after you did?"
+      - "Where did social proof ('everyone does it') show up in your self-talk today?"
+      - "Looking at the week: who belongs in your corner, and who do you need firmer boundaries with?"
+    structured_questions:
+      - id: energy_level
+        label: "Energy level today"
+        type: scale_1_5
+      - id: challenge_adherence
+        label: "Did you honor your challenge today?"
+        type: yes_no_partial
+      - id: urge_count
+        label: "How many urges did you notice?"
+        type: count_0_10
+
+  - week_number: 9
+    title: "Don't Read This Chapter"
+    theme: >
+      Ironic rebound: trying to suppress a thought makes it stronger — the
+      mind sets up a watcher that keeps checking for the forbidden thing,
+      which keeps it active. The way out is the opposite of suppression:
+      let the thought be there, feel the urge fully, and surf it like a
+      wave — it crests and passes on its own if you don't act on it or
+      fight it.
+    microscope:
+      text: >
+        Notice what you're trying not to think about. When you push the
+        thought of your temptation away, how fast does it come back, and
+        does it come back stronger? Track the difference between having an
+        urge and acting on an urge — this week you're learning they are
+        two separate events.
+      daily_prompt: "What thought did you try to suppress today — and what did it do after you pushed it away?"
+    experiment:
+      text: >
+        Practice urge surfing: when a craving hits, stop and locate it in
+        your body. Breathe slowly and observe it like a wave — where is it,
+        how strong, is it rising or falling? Don't act on it, don't argue
+        with it. Ride it for a few minutes and watch what it does. Accept
+        the thought; you choose the behavior.
+      daily_prompt: "Did you surf an urge today instead of suppressing or obeying it? What did the wave actually do?"
+    daily_prompts:
+      - "What happened the last time today you told yourself 'don't think about it'?"
+      - "Where does your urge live in your body? Describe it like a scientist."
+      - "Did any urge you surfed today actually pass on its own? How long did it take?"
+      - "What's the difference, in your own words, between accepting a craving and giving in to it?"
+      - "Did fighting a thought make it louder today? What happened when you stopped fighting?"
+      - "What did slow breathing do to the wave today?"
+      - "Looking at the week: which urges are all bark — the ones that pass if you just wait?"
+    structured_questions:
+      - id: energy_level
+        label: "Energy level today"
+        type: scale_1_5
+      - id: challenge_adherence
+        label: "Did you honor your challenge today?"
+        type: yes_no_partial
+      - id: urge_count
+        label: "How many urges did you notice?"
+        type: count_0_10
+      - id: breathing_done
+        label: "Did you practice urge surfing / slow breathing today?"
+        type: yes_no
+
+  - week_number: 10
+    title: "Final Thoughts"
+    theme: >
+      The through-line of the whole program is self-awareness: there is no
+      single willpower trick, only the scientist's stance — notice what's
+      happening, run experiments, keep what works. This week you integrate:
+      revisit every week's lens, name your personal findings, and decide
+      what you carry forward.
+    microscope:
+      text: >
+        Re-run the Week 1 observation with ten weeks of trained eyes. Watch
+        your challenge with no technique at all — just attention. What do
+        you see now that you couldn't see then? Which old automatic
+        patterns are gone, which persist, and which have merely changed
+        costumes?
+      daily_prompt: "Watching your challenge with ten weeks of practice — what do you see now that Week-1 you was blind to?"
+    experiment:
+      text: >
+        Each day, deliberately redeploy one tool from a past week and grade
+        it: breathing (2), sleep/energy care (3), forgiving a slip (4/6),
+        dropping a false reward (5), the 10-minute rule (7), your role
+        model (8), urge surfing (9). By week's end you'll have a ranked,
+        field-tested shortlist of what actually works for you.
+      daily_prompt: "Which past week's tool did you redeploy today, and what grade does it earn now?"
+    daily_prompts:
+      - "Which single idea from these ten weeks changed your behavior the most?"
+      - "What does your challenge look like now compared to Week 1 — smaller, different, or just better understood?"
+      - "Which tool did you test today and how did it hold up?"
+      - "What relapse trigger remains most dangerous for you, and what's your countermeasure?"
+      - "What did you learn about your I WANT — the deep goal underneath the challenge?"
+      - "What would you tell someone starting Week 1 tomorrow?"
+      - "What are you taking with you — the three tools you'll still be using in a year?"
+    structured_questions:
+      - id: energy_level
+        label: "Energy level today"
+        type: scale_1_5
+      - id: challenge_adherence
+        label: "Did you honor your challenge today?"
+        type: yes_no_partial
+      - id: urge_count
+        label: "How many urges did you notice?"
+        type: count_0_10
+
+  - week_number: 11
+    title: "Habit Automation"
+    theme: >
+      Graduation from willpower. Research (Wendy Wood, James Clear, BJ Fogg)
+      shows lasting change comes from making the good behavior automatic —
+      cued by context, low in friction — so willpower stops being needed at
+      all. This week you engineer your environment instead of your resolve:
+      design cues, add friction to the bad, remove friction from the good,
+      and stack new behaviors onto existing routines.
+    microscope:
+      text: >
+        Audit your habit loops. For your challenge behavior and its
+        replacement, identify cue → routine → reward: where were you, what
+        time was it, what happened right before, how effortless was it?
+        Notice how much of your day runs on context, not choice — the
+        chair, the phone's home screen, the route you walk.
+      daily_prompt: "What cue fired your challenge behavior today — place, time, preceding action, or emotional state?"
+    experiment:
+      text: >
+        Change the environment, not yourself. Add 20 seconds of friction to
+        the unwanted behavior (log out, move it, hide it) and remove 20
+        seconds from the wanted one (lay it out, prep it the night before).
+        Then build one habit stack: "After I [existing routine], I will
+        [tiny version of new behavior]" — and do it every day this week.
+      daily_prompt: "Did your friction changes and habit stack hold today? Did the behavior start to feel automatic?"
+    daily_prompts:
+      - "What did you make 20 seconds harder or easier today, and did it change what you did?"
+      - "Did your habit stack fire after its anchor routine today?"
+      - "Which environment (room, app, time of day) makes your good habit effortless?"
+      - "Where did you rely on raw willpower today when a design change could have done the job?"
+      - "What's the smallest version of your new habit that you can never miss?"
+      - "Did you celebrate or acknowledge the habit after doing it today? Did that change how it felt?"
+      - "Looking at the week: which behavior is closest to automatic now, and what made it so?"
+    structured_questions:
+      - id: energy_level
+        label: "Energy level today"
+        type: scale_1_5
+      - id: challenge_adherence
+        label: "Did you honor your challenge today?"
+        type: yes_no_partial
+      - id: urge_count
+        label: "How many urges did you notice?"
+        type: count_0_10
+
+  - week_number: 12
+    title: "Dopamine Reset"
+    theme: >
+      The pleasure-pain balance (Anna Lembke): every hit of easy dopamine
+      tips a see-saw that rebalances by dipping into pain — craving,
+      restlessness, boredom intolerance. Chasing relief re-tips it, and
+      baseline pleasure keeps dropping. The reset is deliberate scarcity:
+      abstain from one high-dopamine crutch, let the balance level, and use
+      self-binding so the choice is made before the craving speaks.
+    microscope:
+      text: >
+        Track your dopamine economy. Where are the cheap hits — feeds,
+        snacks, purchases, autoplay? Notice the after-state, not the
+        during-state: how do you feel two minutes after the scroll or the
+        treat ends? Watch for the see-saw — restlessness that shows up
+        precisely when stimulation stops.
+      daily_prompt: "What cheap dopamine did you reach for today, and how did you feel two minutes after it ended?"
+    experiment:
+      text: >
+        Pick ONE high-dopamine behavior (not your main challenge if that's
+        already covered) and abstain from it all week. Support it with
+        self-binding: physical distance, app blockers, time locks — decide
+        once, in a calm moment, instead of a hundred times in craving
+        moments. Expect the first days to feel worse; note when boredom
+        starts turning back into interest.
+      daily_prompt: "Did your abstinence hold today? What did the craving do — and did anything ordinary start feeling good again?"
+    daily_prompts:
+      - "How did the abstinence feel today compared to yesterday — worse, same, or lighter?"
+      - "What self-binding held the line for you today, and where did you need a stronger lock?"
+      - "Did boredom show up today? What did you do inside it?"
+      - "Which ordinary thing (food, walk, conversation) felt more vivid than usual today?"
+      - "When the craving spoke today, what did it promise — and was it telling the truth?"
+      - "Did you substitute a different cheap hit for the one you gave up? Which one snuck in?"
+      - "Looking at the week: what does your baseline feel like now, and what's worth letting back in?"
+    structured_questions:
+      - id: energy_level
+        label: "Energy level today"
+        type: scale_1_5
+      - id: challenge_adherence
+        label: "Did you honor your challenge today?"
+        type: yes_no_partial
+      - id: urge_count
+        label: "How many urges did you notice?"
+        type: count_0_10
+
+  - week_number: 13
+    title: "Deep Focus"
+    theme: >
+      Attention is willpower's twin (Cal Newport, Csikszentmihalyi):
+      distraction is a habit loop, focus is a trainable capacity, and flow
+      — full absorption in one hard thing — is both the most productive and
+      the most satisfying state available. This week you train attention
+      like a muscle: scheduled deep blocks, boredom tolerance, and a
+      distraction audit.
+    microscope:
+      text: >
+        Audit your attention. Each time you switch tasks or reach for your
+        phone, note the trigger: difficulty? boredom? a notification? Also
+        catch any accidental flow — moments you looked up and time had
+        passed. What conditions produced them?
+      daily_prompt: "What pulled your attention away most today — and what were you feeling right before you switched?"
+    experiment:
+      text: >
+        Schedule one deep-work block daily (45–90 min): one task, phone in
+        another room, everything else closed. When the itch to switch
+        comes, sit with it 60 seconds before acting — that's the rep that
+        builds the muscle. Once this week, practice pure boredom: stand in
+        a line or sit for ten minutes with no phone at all.
+      daily_prompt: "Did you complete your deep block today? How many switch-itches did you ride out, and did you touch flow?"
+    daily_prompts:
+      - "How deep did today's focus block go — surface skimming, working depth, or flow?"
+      - "What was your longest unbroken stretch on one thing today?"
+      - "When the urge to check something hit mid-block, what did you do with the 60 seconds?"
+      - "What did the no-phone boredom rep feel like? What did your mind do?"
+      - "Which conditions (time, place, task type) made focus easiest today?"
+      - "How was your attention after the deep block — spent, or oddly refreshed?"
+      - "Looking at the week: what would your work and your challenge look like with one flow block every day?"
+    structured_questions:
+      - id: energy_level
+        label: "Energy level today"
+        type: scale_1_5
+      - id: challenge_adherence
+        label: "Did you honor your challenge today?"
+        type: yes_no_partial
+      - id: urge_count
+        label: "How many urges did you notice?"
+        type: count_0_10
+
+  - week_number: 14
+    title: "Self-Compassion & the Playbook"
+    theme: >
+      The consolidation week (Kristin Neff, CBT): self-compassion is the
+      maintenance system that keeps every other tool working, because the
+      program's most consistent finding is that shame fuels relapse while
+      kind accountability fuels recovery. This week you run blameless
+      post-mortems on your slips, correct the distorted thoughts that
+      follow them, and write the personal willpower playbook you'll keep.
+    microscope:
+      text: >
+        Observe your inner coach. After every slip, struggle, or win this
+        week, listen to the voice that comments on it. Is it a drill
+        sergeant, a defense lawyer, or a good coach? Catch the classic
+        distortions: all-or-nothing ("ruined it"), mind-reading, fortune-
+        telling ("I'll never change"). Just name them when they appear.
+      daily_prompt: "What did your inner coach say after today's hardest moment — and would you let anyone talk to a friend that way?"
+    experiment:
+      text: >
+        Run one blameless post-mortem daily: for any slip or near-slip,
+        write the trigger, the thought, the action, and the counter-move
+        for next time — zero verdicts on your character. Then add one page
+        to your Willpower Playbook: your proven tools (from weeks 1-13),
+        your danger conditions, and your recovery script. By Sunday the
+        playbook is complete — that document is what you graduate with.
+      daily_prompt: "Did you run today's post-mortem without a verdict? What line did you add to the playbook?"
+    daily_prompts:
+      - "What went into today's post-mortem — trigger, thought, action, counter-move?"
+      - "Which thinking distortion showed up today, and what's the honest version of that thought?"
+      - "What did self-compassion make possible today that self-criticism would have blocked?"
+      - "Which three tools have earned a permanent spot in your playbook?"
+      - "What are your top danger conditions, and what's the recovery script for each?"
+      - "What would Week-1 you not believe about how you handled today?"
+      - "The program ends tomorrow: what's your maintenance plan — the minimum practice that keeps this alive?"
+    structured_questions:
+      - id: energy_level
+        label: "Energy level today"
+        type: scale_1_5
+      - id: challenge_adherence
+        label: "Did you honor your challenge today?"
+        type: yes_no_partial
+      - id: urge_count
+        label: "How many urges did you notice?"
+        type: count_0_10

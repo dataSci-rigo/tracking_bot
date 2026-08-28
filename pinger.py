@@ -719,8 +719,21 @@ def _resume_pending_ping(now_flag: bool = False) -> bool:
     return now_flag
 
 
+def _bot_enabled() -> bool:
+    """Per-bot on/off toggle (bot_state.py, same dir). Standalone-safe."""
+    try:
+        import bot_state
+        return bot_state.enabled("pinger")
+    except Exception:
+        return True
+
+
 def _run_forever() -> None:
     while True:
+        if not _bot_enabled():
+            time.sleep(60)
+            continue
+
         now       = datetime.now()
         data      = load_data()
         reminders = load_reminders()
@@ -748,7 +761,7 @@ def _run_forever() -> None:
         print(f"[{now_iso()}] Next ping at {wake_at.strftime('%H:%M')} ({wait_sec/60:.1f} min)")
         result = smart_wait(wait_sec, reminders)
 
-        if result == "done" and WINDOW_START <= datetime.now().hour < WINDOW_END and not is_paused():
+        if result == "done" and WINDOW_START <= datetime.now().hour < WINDOW_END and not is_paused() and _bot_enabled():
             one_ping()
 
 
